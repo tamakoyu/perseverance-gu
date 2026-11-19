@@ -13,7 +13,7 @@
 **会话里：**
 - 学习模式：首句以 `【学习】` 开头的讲课会话跳过测底、先讲后考，答错用 `kaoyan_log_mistake` 记错题，讲完综合小测并用 `kaoyan_study_report` 生成问题清单，这一轮结束后弹窗询问是否导出到 Obsidian。
 - 顶栏（窄窗口在「…」菜单里）「导出到 Obsidian」：原子笔记 → `concepts/<科目>/<课程>/`，普通笔记 → `笔记/<科目>/<课程>/<主题>/`，可改文件夹、名字、内容；同名文件会先询问是否覆盖。
-- 讲课 / 练习 AI 可用 `kaoyan_vault_search` / `kaoyan_vault_read` 检索你的 Obsidian 笔记，用 `kaoyan_bank_search` / `kaoyan_bank_get` 检索真题题库（规划时看考法、每个知识点用真题收尾，作答前不透露答案），学习者作答后用 `kaoyan_bank_record` 记进完成情况。规则里还要求检查题达到考研难度（换条件、设陷阱、组合考查），与宿主「一步一题」的出题规则冲突时以插件为准。
+- 讲课 / 练习 AI 可用 `kaoyan_vault_search` / `kaoyan_vault_read` 检索你的 Obsidian 笔记，用 `kaoyan_bank_search` / `kaoyan_bank_get` 检索真题题库（规划时看考法；每个知识点用真题难度的题收尾——考点都在已学范围内用原题，有超纲部分就改编或换题；作答前不透露答案），学习者作答后用 `kaoyan_bank_record` 记进完成情况。规则里还要求检查题达到考研难度（换条件、设陷阱、组合考查），与宿主「一步一题」的出题规则冲突时以插件为准。
 
 ## 安装 / 更新
 
