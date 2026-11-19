@@ -446,16 +446,31 @@ exports.activate = (ctx) => {
     changed("mistakes");
     return r;
   });
-  op("mistakes.check", (p) => jobs.start("check", "错题判分", async () => {
+  op("mistakes.check", (p) => jobs.start("check", "错题判分", async ({ progress, signal }) => {
     const m = store.list("mistakes").find((x) => x.id === p.id);
     if (!m) fail("找不到这道错题");
-    const imgs = [...(m.images || []).map((id) => ({ data: images.get(id) })), ...((p.images || []).map((d) => ({ data: d })))];
-    return llm.json({
+    // 白板手写 / 照片作答：先用 OCR 模型转成文字再判分（判分模型不一定能看清手写）；识别失败的那张原图直接交给判分模型
+    const answerImgs = (p.images || []).filter((d) => typeof d === "string" && d).slice(0, 10);
+    const parts = [];
+    const raw = [];
+    for (let i = 0; i < answerImgs.length; i++) {
+      if (signal?.aborted) fail("已取消");
+      progress?.(i, answerImgs.length, `识别手写作答 ${i + 1}/${answerImgs.length}`);
+      try { parts.push(await bank.transcribe({ data: answerImgs[i], mimeType: "image/jpeg" }, signal)); }
+      catch (err) { if (signal?.aborted) throw err; raw.push(answerImgs[i]); }
+    }
+    const transcript = parts.join("\n\n").trim();
+    const answerText = [str(p.answer, 8000), transcript ? `【手写作答识别】\n${transcript}` : ""].filter((x) => x && x.trim()).join("\n\n");
+    progress?.(answerImgs.length, answerImgs.length + 1, "判分");
+    const imgs = [...(m.images || []).map((id) => ({ data: images.get(id) })), ...raw.map((d) => ({ data: d }))];
+    const res = await llm.json({
       system: "你是考研阅卷老师。判断学生这次重做是否正确，按步骤指出问题。输出 JSON：{\"correct\":true/false,\"score\":0-100,\"feedback\":\"批改意见（中文）\"}",
-      text: `题目：${m.question}\n${(m.options || []).map((o) => `${o.key}. ${o.text}`).join("\n")}\n参考答案：${m.correctAnswer || "（无，请自行求解）"}\n上次的错因：${m.errorType}：${m.diagnosis}\n\n这次作答：${str(p.answer, 8000) || "（见图片中最后几张）"}${m.images?.length ? `\n（前 ${m.images.length} 张图是题目原图）` : ""}`,
+      text: `题目：${m.question}\n${(m.options || []).map((o) => `${o.key}. ${o.text}`).join("\n")}\n参考答案：${m.correctAnswer || "（无，请自行求解）"}\n上次的错因：${m.errorType}：${m.diagnosis}\n\n这次作答：${answerText || "（见图片中最后几张）"}${m.images?.length ? `\n（前 ${m.images.length} 张图是题目原图）` : ""}${raw.length ? `\n（最后 ${raw.length} 张图是学生手写作答）` : ""}`,
       images: imgs.map((x) => ({ ...x, mimeType: "image/jpeg" })),
       maxTokens: 3000,
+      signal,
     });
+    return { ...res, transcript };
   }));
   op("mistakes.ocr", (p) => jobs.start("ocr", "识别错题照片", async () => {
     const imgs = (p.images || []).map((d) => ({ data: d, mimeType: "image/jpeg" }));

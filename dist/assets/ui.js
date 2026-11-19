@@ -453,7 +453,7 @@ export function remotePad(ctx, { key, title, stem = "", onChange } = {}) {
  * 选择 / 填空题在白板上是草稿；解答题点白板里的「发送到本题」，图片回到对应那题。
  * 返回 {button, focus(q), slot(qid), get(qid), isEmpty(qid)}。
  */
-export function padBoard(ctx, { key, title, onNav, onChange } = {}) {
+export function padBoard(ctx, { key, title, onNav, onChange, when = "交卷时", tip } = {}) {
   let id = null;
   let current = null;
   const images = {};
@@ -482,14 +482,22 @@ export function padBoard(ctx, { key, title, onNav, onChange } = {}) {
       delete images[qid]; last[qid] = Date.now(); renderSlot(qid); onChange?.(qid);
       if (id) ctx.call("pad.drop", { id, qid }).catch(() => {});
     }, "ky-btn ky-btn-sm ky-btn-ghost"));
-    s.status.textContent = imgs.length ? `✓ 已收到白板的手写（${imgs.length} 页），交卷时一起提交` : id ? "在白板里写完点「发送到本题」" : "点上方「🖥 白板」在新窗口手写（可拖到 iPad），写完点「发送到本题」";
+    s.status.textContent = imgs.length ? `✓ 已收到白板的手写（${imgs.length} 页），${when}一起提交` : id ? "在白板里写完点「发送到本题」" : "点上方「🖥 白板」在新窗口手写（可拖到 iPad），写完点「发送到本题」";
   }
-  const off = ctx.onNotification((n) => {
-    if (n.topic !== "pad" || n.data?.id !== id) return;
-    if (n.data.nav) onNav?.(n.data.dir, n.data.qid);
-    else fetchNow(n.data.qid);
-  });
+  // 页面重画时按钮会短暂离开文档（或切到别的标签页），所以通知订阅 / 轮询可以停了再接上
+  let off = null;
   let poll = null;
+  function watch() {
+    if (!off) off = ctx.onNotification((n) => {
+      if (n.topic !== "pad" || n.data?.id !== id) return;
+      if (n.data.nav) onNav?.(n.data.dir, n.data.qid);
+      else fetchNow(n.data.qid);
+    });
+    if (!poll) poll = setInterval(() => {
+      if (!button.isConnected) { clearInterval(poll); poll = null; off?.(); off = null; return; }
+      if (current?.mode === "answer") fetchNow(current.qid);
+    }, 3000);
+  }
   const button = btn("🖥 白板", async () => {
     try {
       const r = await ctx.call("pad.board", { key, title });
@@ -498,17 +506,14 @@ export function padBoard(ctx, { key, title, onNav, onChange } = {}) {
       if (r.opened) say("白板已经在浏览器里开着，换题会自动跟过去");
       else { window.open(r.url, "_blank"); say("白板已在浏览器打开，换题会自动跟过去"); }
       Object.keys(slots).forEach(renderSlot);
-      clearInterval(poll);
-      poll = setInterval(() => {
-        if (!button.isConnected) { clearInterval(poll); off?.(); return; }
-        if (current?.mode === "answer") fetchNow(current.qid);
-      }, 3000);
+      watch();
+      if (current?.mode === "answer") fetchNow(current.qid);
     } catch (err) { say(`打不开白板：${err.message}`); }
   }, "ky-btn");
-  button.title = "在系统浏览器里开一块白板（可拖到 iPad）。整套题只开一次：选择 / 填空当草稿纸，解答题写完点「发送到本题」";
+  button.title = tip || "在系统浏览器里开一块白板（可拖到 iPad）。整套题只开一次：选择 / 填空当草稿纸，解答题写完点「发送到本题」";
   return {
     button: el("span", "ky-pad-board", button, status),
-    focus(q) { current = q; sendFocus(); },
+    focus(q) { current = q; sendFocus(); if (id) { watch(); fetchNow(q.qid); } },
     slot(qid) {
       if (!slots[qid]) slots[qid] = { status: el("span", "ky-muted", ""), thumbs: el("div", "ky-thumbs") };
       const s = slots[qid];
@@ -517,5 +522,7 @@ export function padBoard(ctx, { key, title, onNav, onChange } = {}) {
     },
     get: (qid) => (images[qid] || []).slice(),
     isEmpty: (qid) => !images[qid]?.length,
+    /** 这题收到的手写已经用掉了（如错题评分后）：本地和白板都清掉 */
+    forget(qid) { delete images[qid]; delete slots[qid]; if (id) ctx.call("pad.drop", { id, qid }).catch(() => {}); },
   };
 }

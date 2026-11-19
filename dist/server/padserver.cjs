@@ -200,12 +200,12 @@ function apply(next){
   st=next;
   const ready=!!st.qid;
   $("wait").classList.toggle("hide",ready);wrap.classList.toggle("hide",!ready);
-  $("ttl").textContent=(st.multi&&st.total?(st.index+1)+" / "+st.total+" · ":"")+(st.title||"答题白板");
+  $("ttl").textContent=(st.multi&&st.total>1?(st.index+1)+" / "+st.total+" · ":"")+(st.title||"答题白板");
   document.title="手写 · "+(st.title||"白板");
   const m=$("mode"),n=(st.sent||{})[st.qid]||0;
   m.textContent=!ready?"":st.mode==="draft"?"草稿":n?"已发送":"作答";m.className="chip "+(st.mode==="draft"?"draft":n?"sent":"answer");
   $("sub").classList.toggle("hide",st.mode==="draft"||!ready);
-  $("prev").classList.toggle("hide",!st.multi||!ready);$("next").classList.toggle("hide",!st.multi||!ready);
+  const one=!st.multi||!ready||st.total<=1;$("prev").classList.toggle("hide",one);$("next").classList.toggle("hide",one);
   $("prev").disabled=!(st.index>0);$("next").disabled=!(st.index<st.total-1);
   const stem=String(st.stem||"").trim();
   $("stemBox").classList.toggle("hide",!stem);$("stem").textContent=stem;

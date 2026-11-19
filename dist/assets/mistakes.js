@@ -1,5 +1,5 @@
 // 错题本：今日重做（FSRS）、全部错题、问题清单、录入（手动 / 拍照识别）。
-import { put, reset, optionsBlock, el, btn, select, field, md, errorBox, toast, photoPicker, storedImages, runJob, tabs, fmtTime, SUBJECTS, RATINGS } from "./ui.js";
+import { put, reset, optionsBlock, el, btn, select, field, md, errorBox, toast, photoPicker, storedImages, runJob, tabs, fmtTime, SUBJECTS, RATINGS, inkPad, padBoard } from "./ui.js";
 
 export function mountMistakes(ctx, container, signal) {
   const root = el("div", "ky-root");
@@ -9,6 +9,9 @@ export function mountMistakes(ctx, container, signal) {
   let errorTypes = [];
   let filter = { subject: "", errorType: "", q: "", archived: false };
   const body = el("div");
+  // 「今日重做」共用一块新窗口白板（可拖到 iPad）：换到下一道错题时白板自动跟过去
+  const board = padBoard(ctx, { key: "mistakes:redo", title: "错题重做", when: "判分时", tip: "在系统浏览器里开一块白板（可拖到 iPad）。只开一次，做完一道换下一道时白板会自动跟过去；写完点「发送到本题」" });
+  const stripKey = (t) => String(t || "").replace(/^\s*[(（]?[A-G][)）.．、]\s*/, "");
 
   async function load() {
     try {
@@ -46,27 +49,42 @@ export function mountMistakes(ctx, container, signal) {
     if (!list.length) { put(body, el("p", "ky-empty", "今天没有到期的错题 🎉")); return; }
     const m = list[0];
     const started = Date.now();
-    put(body, el("div", "ky-muted", `还剩 ${list.length} 道`));
+    // 每次重做一个新槽位：同一道错题下次再到期时白板是干净的
+    const qid = `${m.id}:${m.history?.length || 0}`;
+    put(body, el("div", "ky-row", el("span", "ky-muted", `还剩 ${list.length} 道`), board.button));
     const card = el("section", "ky-card");
-    const answer = el("textarea", { class: "ky-input ky-ta", placeholder: "重新做一遍，写下答案或关键步骤（也可以拍照）" });
+    const answer = el("textarea", { class: "ky-input ky-ta", placeholder: "重新做一遍，写下答案或关键步骤；也可以在下面的画板 / 新窗口白板手写，或拍照" });
+    const pad = inkPad({ height: 420, label: "手写作答（判分时一起提交）" });
     const photos = photoPicker("拍照作答");
     const reveal = el("div");
     const actions = el("div", "ky-row");
-    put(card, questionBlock(m), field("这次的作答", answer), photos.node, actions, reveal);
+    put(card, questionBlock(m), field("这次的作答", answer), board.slot(qid), pad.node, photos.node, actions, reveal);
     put(body, card);
+    board.focus({
+      qid,
+      title: `错题重做 · ${[m.subject, m.topic].filter(Boolean).join(" · ")}`,
+      stem: [m.question || "", ...(m.options || []).map((o) => `${o.key}. ${stripKey(o.text)}`)].filter(Boolean).join("\n"),
+      mode: "answer",
+      index: 0,
+      total: 1,
+    });
+    const handwriting = () => { const ink = pad.get(); return [...board.get(qid), ...(ink ? [ink] : []), ...photos.get()]; };
 
     const showAnswer = (feedback) => {
       reset(actions);
       reset(reveal, 
         feedback ? el("div", { class: `ky-verdict ${feedback.correct ? "ky-ok" : "ky-bad"}` }, `${feedback.correct ? "✓ 做对了" : "✗ 还有问题"}（${feedback.score ?? ""}）`) : null,
         feedback ? md(ctx, feedback.feedback, signal) : null,
+        feedback?.transcript ? el("details", "ky-material", el("summary", null, "手写识别结果"), md(ctx, feedback.transcript, signal)) : null,
         el("h4", "ky-h4", "正确答案"), md(ctx, m.correctAnswer || "（未记录）", signal),
         el("h4", "ky-h4", "上次的错因"), el("p", null, `${m.errorType}：${m.diagnosis || "—"}`),
         m.learnerAnswer ? el("p", "ky-muted", `上次的作答：${m.learnerAnswer}`) : null,
         el("h4", "ky-h4", "这次掌握得怎么样？"),
         el("div", "ky-row", ...RATINGS.map(([r, label, cls]) => btn(label, async () => {
           try {
-            await ctx.call("mistakes.rate", { id: m.id, rating: r, correct: feedback ? !!feedback.correct : r > 1, answer: answer.value, feedback: feedback?.feedback || "" });
+            const said = [answer.value.trim(), feedback?.transcript ? `【手写】${feedback.transcript}` : ""].filter(Boolean).join("\n");
+            await ctx.call("mistakes.rate", { id: m.id, rating: r, correct: feedback ? !!feedback.correct : r > 1, answer: said, feedback: feedback?.feedback || "" });
+            board.forget(qid);
             await ctx.call("activity.log", { subject: m.subject, minutes: Math.round((Date.now() - started) / 60000), kind: "redo" });
           } catch (err) { toast(root, err.message, "error"); }
           load();
@@ -74,9 +92,10 @@ export function mountMistakes(ctx, container, signal) {
     };
     put(actions, 
       btn("AI 判分", async () => {
-        if (!answer.value.trim() && !photos.get().length) { toast(root, "先写下作答或拍照"); return; }
+        const imgs = handwriting();
+        if (!answer.value.trim() && !imgs.length) { toast(root, "先写下作答、手写或拍照"); return; }
         try {
-          const res = await runJob(ctx, reveal, () => ctx.call("mistakes.check", { id: m.id, answer: answer.value, images: photos.get() }), "判分");
+          const res = await runJob(ctx, reveal, () => ctx.call("mistakes.check", { id: m.id, answer: answer.value, images: imgs }), "判分");
           showAnswer(res);
         } catch (err) { reset(reveal, errorBox(err)); }
       }, "ky-btn ky-btn-primary"),
