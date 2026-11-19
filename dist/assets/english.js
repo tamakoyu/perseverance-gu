@@ -27,19 +27,7 @@ export function mountEnglish(ctx, container, signal) {
     const sentence = el("textarea", { class: "ky-input", placeholder: "原句（精读时遇到它的那句话）" });
     const src = el("input", { class: "ky-input", placeholder: "出处，如：2014 Text 1" });
     const msg = el("div");
-    put(body, el("section", "ky-card", el("h3", "ky-h3", "添加生词"),
-      el("div", "ky-grid2", field("单词", word), field("出处", src)), field("原句", sentence),
-      btn("添加（AI 补全释义）", async () => {
-        if (!word.value.trim()) return;
-        reset(msg, el("span", "ky-muted", "查询中…"));
-        try {
-          const r = await ctx.call("vocab.add", { word: word.value, sentence: sentence.value, source: src.value });
-          reset(msg, el("div", "ky-ok", `${r.merged ? "已在生词本，补充了新例句" : "已添加"}：${r.item.word} ${r.item.phonetic} ${r.item.meaning}`));
-          word.value = ""; sentence.value = "";
-        } catch (err) { reset(msg, errorBox(err)); }
-      }, "ky-btn ky-btn-primary"), msg));
-
-    const review = el("section", "ky-card", el("h3", "ky-h3", `今日复习（${due.length}）`));
+    const review = el("section", "ky-card ky-vocab-review", el("h3", "ky-h3", `今日复习（${due.length}）`));
     put(body, review);
     const next = (list) => {
       if (!list.length) { put(review, el("p", "ky-empty", "今天的生词都复习完了")); return; }
@@ -66,6 +54,18 @@ export function mountEnglish(ctx, container, signal) {
       put(review, card);
     };
     next(due);
+
+    put(body, el("section", "ky-card", el("h3", "ky-h3", "添加生词"),
+      el("div", "ky-grid2", field("单词", word), field("出处", src)), field("原句", sentence),
+      btn("添加（AI 补全释义）", async () => {
+        if (!word.value.trim()) return;
+        reset(msg, el("span", "ky-muted", "查询中…"));
+        try {
+          const r = await ctx.call("vocab.add", { word: word.value, sentence: sentence.value, source: src.value });
+          reset(msg, el("div", "ky-ok", `${r.merged ? "已在生词本，补充了新例句" : "已添加"}：${r.item.word} ${r.item.phonetic} ${r.item.meaning}`));
+          word.value = ""; sentence.value = "";
+        } catch (err) { reset(msg, errorBox(err)); }
+      }, "ky-btn ky-btn-primary"), msg));
 
     const all = el("details", "ky-card", el("summary", "ky-sum", el("b", null, `全部生词（${words.length}）`)));
     put(all, ...words.slice().reverse().map((w) => el("div", "ky-meta-row", el("b", null, w.word), el("span", null, w.meaning), el("span", "ky-muted", `下次 ${fmtTime(w.card?.due)}`),

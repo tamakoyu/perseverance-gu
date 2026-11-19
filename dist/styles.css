@@ -154,6 +154,14 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .ky-word { font-size: 1.6rem; font-weight: 700; }
 .ky-sentence { font-style: italic; opacity: .85; }
 .ky-word-meaning { font-weight: 600; }
+.ky-vocab-review .ky-flash { min-height: 340px; padding: 32px 28px; gap: 16px; align-items: center; justify-content: center; text-align: center; }
+.ky-vocab-review .ky-word { font-size: 2.8rem; }
+.ky-vocab-review .ky-sentence { font-size: 1.15rem; line-height: 1.7; max-width: 46em; }
+.ky-vocab-review .ky-word-meaning { font-size: 1.35rem; }
+.ky-vocab-review .ky-flash > div:not(.ky-hidden) { width: 100%; }
+.ky-vocab-review .ky-flash .ky-row { justify-content: center; margin-top: 8px; }
+.ky-vocab-review .ky-flash .ky-btn { font-size: 1rem; padding: 8px 18px; }
+.ky-vocab-review .ky-empty { min-height: 160px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
 .ky-result { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 6px; }
 .ky-sub { margin: 6px 0; padding-left: 8px; }
 .ky-pre { white-space: pre-wrap; font: inherit; }
