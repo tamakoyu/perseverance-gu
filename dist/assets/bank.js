@@ -1,10 +1,11 @@
 // 题库：试卷列表、浏览题目、导入（PDF 文字层 / PDF OCR / 照片 / 粘贴文字）。
+import { mountBankProgress } from "./bankprogress.js";
 import { put, reset, optionsBlock, el, btn, select, field, md, errorBox, toast, runJob, tabs, fileToBase64, imageToBase64, storedImages, SUBJECTS, copy } from "./ui.js";
 
 export function mountBank(ctx, container, signal) {
   const root = el("div", "ky-root");
   put(container, root);
-  let tab = "papers";
+  let tab = "progress";
   let papers = [];
   let current = null;
   const body = el("div");
@@ -15,9 +16,10 @@ export function mountBank(ctx, container, signal) {
   }
 
   function render() {
-    reset(root, el("h2", "ky-h2", "题库"), tabs([["papers", `试卷（${papers.length}）`], ["import", "导入"], ["search", "搜索题目"]], tab, (k) => { tab = k; current = null; render(); }), body);
+    reset(root, el("h2", "ky-h2", "题库"), tabs([["progress", "完成情况"], ["papers", `试卷（${papers.length}）`], ["import", "导入"], ["search", "搜索题目"]], tab, (k) => { tab = k; current = null; render(); }), body);
     reset(body);
-    if (tab === "papers") current ? renderPaper(current) : renderPapers();
+    if (tab === "progress") mountBankProgress(ctx, body, signal);
+    else if (tab === "papers") current ? renderPaper(current) : renderPapers();
     else if (tab === "import") renderImport();
     else renderSearch();
   }

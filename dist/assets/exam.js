@@ -266,5 +266,14 @@ export function mountExam(ctx, container, signal) {
     }
   }
 
+  // 从题库「完成情况」选好的题直接开练
+  if (preset?.mode === "ids" && Array.isArray(preset.ids) && preset.ids.length) {
+    const out = el("div");
+    reset(root, el("h2", "ky-h2", "快练 / 模考"), out);
+    runJob(ctx, out, () => ctx.call("quiz.start", { mode: "section", subject: preset.subject, ids: preset.ids, minutes: Number(preset.minutes) || 0, title: preset.title || "真题练习" }), "组卷")
+      .then((r) => { if (!signal.aborted) startExam(r, Number(preset.minutes) || 0); })
+      .catch((err) => { reset(root, el("h2", "ky-h2", "快练 / 模考"), errorBox(err)); });
+    return;
+  }
   render();
 }

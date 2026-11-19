@@ -375,7 +375,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     const q = String(query || "").toLowerCase().trim();
     const parts = q.split(/[\s,，、;；]+/).filter(Boolean);
     const terms = new Set(parts);
-    for (const t of parts) if (/^[一-龥]{4,}$/.test(t)) for (let i = 0; i < t.length - 1; i++) terms.add(t.slice(i, i + 2));
+    for (const t of parts) if (/^[一-龥]{3,}$/.test(t)) for (let i = 0; i < t.length - 1; i++) terms.add(t.slice(i, i + 2));
     const hits = [];
     for (const it of all()) {
       if (subject && it.subject !== subject) continue;
@@ -386,11 +386,17 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
       const stem = it.stem.toLowerCase();
       const rest = `${it.options.map((o) => o.text).join(" ")} ${it.analysis}`.toLowerCase();
       let score = terms.size ? 0 : 1;
+      let covered = 0;
       for (const t of terms) {
-        if (topics.includes(t)) score += 10 * t.length;
-        if (stem.includes(t)) score += 4 * t.length;
-        if (rest.includes(t)) score += t.length;
+        let s = 0;
+        if (topics.includes(t)) s += 10 * t.length;
+        if (stem.includes(t)) s += 4 * t.length;
+        if (rest.includes(t)) s += t.length;
+        if (s) covered++;
+        score += s;
       }
+      // 命中的检索词越多越靠前：只沾到一个泛词（如「函数」）的题往后排
+      if (terms.size > 1) score *= 0.4 + 0.6 * (covered / terms.size);
       if (score > 0) hits.push({ it, score: score + (it.source === "AI生成" ? -5 : 0) + (it.year || 0) / 10000 });
     }
     return hits.sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(20, limit))).map((h) => h.it);

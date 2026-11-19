@@ -17,6 +17,7 @@ const { createEngPractice } = require("./server/engpractice.cjs");
 const { createPadServer } = require("./server/padserver.cjs");
 const { SETUP_PROMPT, PAPERS_PROMPT } = require("./server/setupprompt.cjs");
 const { createPack } = require("./server/pack.cjs");
+const { createProgress } = require("./server/progress.cjs");
 
 // 路径默认留空：每个人在 设置 → 考研工具箱 里填（或点「自动检测」从 Obsidian 读取）。
 const DEFAULT_SETTINGS = {
@@ -57,17 +58,35 @@ const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插�
 学习者在 Obsidian 里有自己的考研笔记仓库（科目：数学 / 408 / 英语 / 政治）。可用工具：
 - kaoyan_vault_search：按关键词检索笔记，返回路径和片段。
 - kaoyan_vault_read：读取一篇笔记全文。
-讲一个知识点或出题前，先用 kaoyan_vault_search 搜一下学习者自己的笔记：沿用其中的讲法、符号、例题和已经记下的易错点，并在讲解里自然地点出「你笔记里写过…」。不要大段照抄笔记，也不要因为没搜到就停下。
+每个计划节点开讲前用 kaoyan_vault_search 搜一次学习者自己的笔记（同一节点内不要重复搜）：沿用其中的讲法、符号、例题和已经记下的易错点，并在讲解里自然地点出「你笔记里写过…」。不要大段照抄笔记，也不要因为没搜到就停下。
 学习者在练习或检查题里答错时，可以调用 kaoyan_log_mistake 把题目记进错题本（附错因），之后会按遗忘曲线安排重做。
 
 ## 真题题库（考研工具箱插件）
 学习者的题库里有历年数学一、408 真题（含答案和解析），可用工具：
 - kaoyan_bank_search：按考点 / 关键词检索真题，返回题号、年份、题型和题干摘要（不含答案）。
 - kaoyan_bank_get：按 id 取一道题的完整内容（题干、选项、答案、解析）。
-用法：
-- 讲某个考点时，先 kaoyan_bank_search 看看历年怎么考，挑一两道合适的真题当例题或检查题，并告诉学习者出处（如「2019 年数一第 3 题」）；讲解时可以点出「这个点 20xx 年考过」。
-- 用真题出题（检查题、练习题）时，**答案和解析只给你自己看**，绝不能在学习者作答前泄露；作答后再结合官方解析讲评。
-- 题库检索不到合适的题时，照常自己出题，不要因此停下。`;
+什么时候必须用真题：
+1. **规划时**：对计划里的主要考点检索真题（limit 8–10），**在同一个回合里并行发出这些检索**，不要一个一个等；看历年怎么考、考到多深，据此决定讲到什么深度、节点终点放在哪里；向学习者介绍计划时顺带说明「这个点近年常考 …」。
+2. **每个计划节点讲完、转到下一个节点之前**：用一道真题做这个节点的收尾检查题（优先近 15 年，用 yearFrom 过滤），题面照搬原题并注明出处（如「2019 年数一第 3 题」）。检索结果不对题就换更具体的考点词再搜一次；仍然没有合适的，出一道与真题同等难度的改编题，并说明是「仿真题改编」。
+3. 学习模式的综合小测里，至少一半用真题。
+4. 练习会话里，每个目标的主体题优先从真题里挑或照真题改编。
+用法细节：
+- 检索用具体考点词（「周期 抽象函数」「反常积分 比较判别」），不要只用「函数」「积分」这种泛词。
+- 用真题出题时，**答案和解析只给你自己看**，绝不能在学习者作答前泄露；quiz 的解析 / 标准答案按官方解析整理，作答后结合官方解析讲评。标了「AI 解答 / AI 补写」的答案可能有误，先自己核对。
+- 真题是多步综合题时，用 quiz 的自由作答形式，或拆成几个选项考关键一步；不要因为题目超出「刚讲的这一步」就放弃使用——节点收尾题本来就该综合。
+- **记录完成情况**：用题库真题出的题，学习者一作答、你判定对错后，马上调用 kaoyan_bank_record（带真题 id、是否做对；主观题部分得分时带 score）。做错时调用 kaoyan_log_mistake 也带上 bankId。改编题、自己出的题不要记录。
+- **省往返**：同一回合需要的检索 / 取题 / 记录工具一次并行发出；kaoyan_bank_record 和下一道题的检索可以放在同一回合。
+- **计划图（plan_init）**：节点标题写短（中文不超过 16 个字），不要用 <br/> 或换行，细节放到讲解里。
+- 题库只有数学一、408；英语、政治没有真题工具时，按下面「考研难度」自己出题。
+
+## 考研难度（考研工具箱插件；本节与通用教学 / 出题规则冲突时，以本节为准）
+学习者在备考全国硕士研究生统一考试（数学一 / 408 / 英语一 / 政治），目标是在考场上做对真题。
+- 「一次只讲一步」是讲解的节奏，不是题目的难度。检查题可以只考刚讲的这一步，但必须是考研的样子：换条件、设陷阱（定义域、端点、可导与连续、充分非必要、反例）、或把这一步和前面讲过的内容组合。只是把刚讲的式子代一次数、照上一段讲解机械套用就能做对的题，太简单，重出。
+- 选择题的干扰项要对应考研里真实常见的错误（漏条件、记反结论、混淆相近概念），不要放一眼就能排除的选项。
+- 预测题保持引导性即可，但不要连续两步以上都是「预测 + 一步代入检查」的节奏，中间要插入考研难度的检查题。
+- 难度调节：连续两道检查题答对且思路完整 → 下一道直接上真题或同等难度的综合题；答错 → 先针对错因修复，再用一道**同难度**的变式确认，不要退回纯代入题；同一点连错两次，才降回更基础的一步。
+- 学习者说「复习」或测底显示已经学过时，起点就是考研难度：基础定义一句带过，直接从易错点和真题考法讲起。
+- 学习者说太简单 / 太难时，立刻按他说的调整。`;
 
 /** 支持 ~ 开头的路径。 */
 function expandHome(p) {
@@ -141,6 +160,7 @@ exports.activate = (ctx) => {
   const jobs = createJobs(ctx);
   const bank = createBank({ store, llm, pdf, images, getSettings: settings, getPapersRoot: () => papersRoot() });
   const english = createEnglish({ store, llm });
+  const progress = createProgress({ store, bank });
   const stats = createStats({ ctx, store, vault, bank });
   const engImport = createEngImport({ store, llm, pdf, images, bank, getSettings: settings });
   const engPractice = createEngPractice({ store, llm, bank });
@@ -285,6 +305,28 @@ exports.activate = (ctx) => {
         },
       );
       tools.push({
+        name: "kaoyan_bank_record",
+        label: "记录真题作答",
+        description: "用题库真题（kaoyan_bank_get 取到的题）出的检查题 / 练习题，学习者作答并判定后立即调用一次：把这道真题记为已做，题库「完成情况」里会显示。只用于题库里的真题，自己出的题或改编题不要调用。",
+        parameters: {
+          type: "object",
+          properties: {
+            id: { type: "string", minLength: 1, maxLength: 100, description: "真题 id（kaoyan_bank_search / kaoyan_bank_get 里的 id）" },
+            correct: { type: "boolean", description: "学习者这次是否做对（部分对算 false，并给 score）" },
+            score: { type: "number", minimum: 0, maximum: 100, description: "可选：按这道题满分给的得分，主观题部分得分时填" },
+            learnerAnswer: { type: "string", maxLength: 2000, description: "学习者的作答（简短）" },
+          },
+          required: ["id", "correct"],
+          additionalProperties: false,
+        },
+        execute: async (_id, input, signal) => {
+          guard(signal);
+          const r = progress.record({ ...input, agent: context.agent, chatId: context.chatId });
+          if (!r) return textResult("题库里没有这个 id，没有记录。只有题库真题才需要记录。", {});
+          return textResult(`已记录：${r.q.paper} 第${r.q.number}题 ${input.correct ? "做对" : "做错"}。${input.correct ? "" : "如果还没记错题，用 kaoyan_log_mistake（带上 bankId）记进错题本。"}`, { id: r.entry.id });
+        },
+      });
+      tools.push({
         name: "kaoyan_log_mistake",
         label: "记录错题",
         description: "学习者答错或答得含糊时调用：把题目、学习者回答、正确答案、错因记进错题本，之后按遗忘曲线安排重做。",
@@ -298,13 +340,14 @@ exports.activate = (ctx) => {
             correctAnswer: { type: "string", maxLength: 8000, description: "正确答案与关键步骤" },
             errorType: { type: "string", enum: ERROR_TYPES },
             diagnosis: { type: "string", minLength: 1, maxLength: 2000, description: "错在哪、为什么错" },
+            bankId: { type: "string", maxLength: 100, description: "这道题来自题库真题时填真题 id" },
           },
           required: ["subject", "topic", "question", "learnerAnswer", "errorType", "diagnosis"],
           additionalProperties: false,
         },
         execute: async (_id, input, signal) => {
           guard(signal);
-          const m = addMistake({ ...input, source: context.agent === "practice" ? "练习会话" : "学习模式", chatId: context.chatId });
+          const m = addMistake({ ...input, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: context.agent === "practice" ? "练习会话" : "学习模式", chatId: context.chatId });
           return textResult(`已记进错题本（${m.errorType}：${m.topic}）。现在针对错因讲解，再换题检查。`, { id: m.id });
         },
       });
@@ -681,6 +724,7 @@ exports.activate = (ctx) => {
     return job;
   });
   op("english.overview", () => engPractice.overview());
+  op("bank.overview", (p) => progress.overview(["数学", "408"].includes(p?.subject) ? p.subject : "数学"));
   op("english.units", (p) => engPractice.unitInfo(Array.isArray(p.ids) ? p.ids.map((x) => str(x, 300)) : []));
   op("english.review", (p) => jobs.start("review", "AI 复盘", (j) => engPractice.review({ attemptId: str(p.attemptId, 100), ...j })));
   op("english.aiDrill", (p) => jobs.start("drill", "生成强化题", (j) => engPractice.aiDrill({ attemptId: str(p.attemptId, 100), unitId: str(p.unitId, 300), ...j })));

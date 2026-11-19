@@ -354,3 +354,22 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .ky-remote .ky-thumb img.ky-zoom { width: auto; max-width: 100%; max-height: none; cursor: zoom-out; }
 .ky-details { border: 1px solid color-mix(in srgb, var(--foreground) 15%, transparent); border-radius: 8px; padding: 8px 12px; margin: 12px 0 0; }
 .ky-details > summary { cursor: pointer; font-weight: 600; }
+
+/* 数学 / 408 真题完成情况 */
+.ky-bp-subj { display: inline-flex; gap: 4px; }
+.ky-bp-filter { margin-bottom: 10px; }
+.ky-bp-grid { min-width: 560px; }
+.ky-bp-grid tbody th { vertical-align: top; padding-top: 2px; }
+.ky-bp-yearsub { font-size: .66rem; font-weight: 400; opacity: .6; font-variant-numeric: tabular-nums; }
+.ky-bp-cell { vertical-align: top; }
+.ky-bp-cell { display: table-cell; }
+.ky-bp-chip { font: inherit; color: inherit; font-size: .78rem; font-variant-numeric: tabular-nums; min-width: 34px; min-height: 30px; margin: 2px; padding: 0 5px; border-radius: 7px; border: 1.5px solid transparent; cursor: pointer; position: relative; transition: transform .08s, opacity .15s; }
+.ky-bp-chip:active { transform: scale(.94); }
+.ky-bp-chip sup { font-size: .6rem; opacity: .65; margin-left: 1px; }
+.ky-bp-chip.ky-s-todo { opacity: .75; }
+.ky-bp-chip.ky-sel { border-color: var(--foreground); font-weight: 650; opacity: 1; }
+.ky-bp-chip.ky-focus { outline: 2px dashed color-mix(in srgb, var(--foreground) 45%, transparent); outline-offset: 1px; }
+.ky-bp-chip.ky-bp-dim { opacity: .18; }
+.ky-bp-chip.ky-bp-mis::before { content: ""; position: absolute; top: 2px; right: 2px; width: 6px; height: 6px; border-radius: 50%; background: #d0505b; }
+.ky-bp-misdot { background: #d0505b; border-radius: 50%; width: 8px; height: 8px; }
+.ky-bp-wrong { background: color-mix(in srgb, #d0505b 65%, transparent); }
