@@ -71,10 +71,11 @@ export function activate(ctx) {
       const testConn = async () => {
         try {
           const r = await ctx.call("vault.test", { vaultPath: vault.value, papersPath: papers.value });
-          const lack = [["计划", r.plans], ["concepts", r.concepts], ["笔记", r.notes]].filter(([, ok]) => !ok).map(([n]) => `${n}/`);
+          const lack = [["计划/", r.plans], ["笔记规范/笔记格式规范.md", r.spec]].filter(([, ok]) => !ok).map(([n]) => n);
           reset(conn,
             el("div", "ky-ok", `✓ 已连接 ${r.root}：${r.md} 篇笔记${r.isObsidian ? "" : "（没找到 .obsidian，确认这是仓库根目录）"}`),
-            lack.length ? el("div", "ky-muted", `仓库里还没有 ${lack.join("、")}，导出笔记时会自动创建；今日面板读 计划/ 里的周计划。`) : null,
+            el("div", "ky-muted", `科目文件夹：${(r.subjects || []).join("、") || "还没有"}（导出笔记写到 <科目>/<课程>/ 下，没有会自动创建）。`),
+            lack.length ? el("div", "ky-muted", `仓库里还没有 ${lack.join("、")}：今日面板读 计划/ 里的周计划；没有笔记规范时导出用插件内置的简版格式。`) : null,
             r.papers ? el("div", r.papers.ok ? "ky-ok" : "ky-error", r.papers.ok ? `✓ 真题文件夹：manifest.json 列了 ${r.papers.items} 份文件` : r.papers.exists ? "真题文件夹里没有可读的 manifest.json" : "真题文件夹不存在") : null);
         } catch (err) { reset(conn, errorBox(err)); }
       };
@@ -98,7 +99,7 @@ export function activate(ctx) {
             toast(root, "已复制，粘贴给 Claude Code 等能操作本机文件的 agent 即可");
           };
           reset(promptBox,
-            el("p", "ky-hint", "把下面的提示词复制给能读写本机文件的 AI agent（如 Claude Code）。它会在这台电脑上找到或新建 Obsidian 考研仓库和真题文件夹，会先问你考哪些科目，再按统一格式建好 concepts / 笔记 / 科目 / 真题 等文件夹，最后写好插件设置。提示词不含任何本机信息，换电脑也能用；动手前它会先跟你确认位置，并让你退出 LearnHarness。"),
+            el("p", "ky-hint", "把下面的提示词复制给能读写本机文件的 AI agent（如 Claude Code）。它会在这台电脑上找到或新建 Obsidian 考研仓库和真题文件夹，会先问你考哪些科目，再按统一格式建好 计划 / 科目 / 真题 等文件夹，最后写好插件设置。提示词不含任何本机信息，换电脑也能用；动手前它会先跟你确认位置，并让你退出 LearnHarness。"),
             ta,
             el("div", "ky-row", btn("复制提示词", copy, "ky-btn ky-btn-primary"), btn("收起", () => reset(promptBox), "ky-btn ky-btn-ghost")));
           ta.focus(); ta.select();

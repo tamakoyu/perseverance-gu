@@ -49,7 +49,7 @@ function createVault(getRoot) {
   function search(query, { limit = 8, includePlans = false } = {}) {
     const ts = terms(query);
     if (!ts.length) return [];
-    const files = walk(root(), [], includePlans ? null : (p) => !rel(p).startsWith("计划/"));
+    const files = walk(root(), [], (p) => !/^(笔记规范|模板)\//.test(rel(p)) && (includePlans || !rel(p).startsWith("计划/")));
     const hits = [];
     for (const f of files) {
       const r = rel(f);
@@ -85,7 +85,7 @@ function createVault(getRoot) {
     return { path: rel(abs), text: text.length > max ? `${text.slice(0, max)}\n\n…（已截断，共 ${text.length} 字）` : text };
   }
 
-  /** concepts/ 与 笔记/ 下的文件夹（最多 4 层），用于导出时判定位置。 */
+  /** 各科目文件夹下的子文件夹（最多 4 层），用于导出时判定位置。 */
   function folders() {
     const base = root();
     const out = [];
@@ -98,7 +98,7 @@ function createVault(getRoot) {
         visit(p, depth + 1);
       }
     };
-    for (const top of ["concepts", "笔记", ...SUBJECTS]) {
+    for (const top of SUBJECTS) {
       const p = path.join(base, top);
       if (fs.existsSync(p)) { out.push(top); visit(p, 1); }
     }
@@ -106,11 +106,17 @@ function createVault(getRoot) {
   }
 
   function titles() {
-    return walk(root(), [], (p) => !rel(p).startsWith("计划/")).map((f) => rel(f));
+    return walk(root(), [], (p) => !/^(计划|笔记规范|模板)\//.test(rel(p))).map((f) => rel(f));
   }
 
   function safeName(name) {
     return String(name || "未命名").replace(/[\\/:*?"<>|#^[\]]/g, "-").replace(/\s+/g, " ").trim().slice(0, 80) || "未命名";
+  }
+
+  /** 读整篇笔记原文（不截断）；不存在返回 null。导出更新章节笔记时用来比对和备份。 */
+  function readFull(relPath) {
+    const abs = inside(relPath.endsWith(".md") ? relPath : `${relPath}.md`);
+    return fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
   }
 
   /** 写一篇笔记；已存在且未允许覆盖时报错，由前端确认后再覆盖。 */
@@ -294,7 +300,7 @@ function createVault(getRoot) {
     return { raw: next };
   }
 
-  return { root, search, read, folders, titles, writeNote, weekPlan, dayPlan, toggleTask, SUBJECTS };
+  return { root, search, read, readFull, folders, titles, writeNote, safeName, weekPlan, dayPlan, toggleTask, SUBJECTS };
 }
 
 module.exports = { createVault };

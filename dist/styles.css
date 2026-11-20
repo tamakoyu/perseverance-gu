@@ -405,3 +405,11 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .ky-step-done { opacity: .8; }
 .ky-step-done .ky-step-dot { background: #18a058; border-color: #18a058; }
 .ky-toast-btn { border: none; cursor: pointer; font: inherit; font-size: 13px; }
+
+/* 导出笔记：差异视图 */
+.ky-diff { border: 1px solid var(--border); border-radius: 6px; padding: 6px 0; max-height: 50vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.ky-diff > div { padding: 0 10px; }
+.ky-diff-add { background: color-mix(in srgb, #3fb950 16%, transparent); }
+.ky-diff-del { background: color-mix(in srgb, #f85149 16%, transparent); text-decoration: line-through; opacity: .8; }
+.ky-diff-ctx { opacity: .65; }
+.ky-diff-skip { opacity: .5; font-style: italic; padding: 2px 10px; }

@@ -58,7 +58,11 @@ const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插�
 学习者在 Obsidian 里有自己的考研笔记仓库（科目：数学 / 408 / 英语 / 政治）。可用工具：
 - kaoyan_vault_search：按关键词检索笔记，返回路径和片段。
 - kaoyan_vault_read：读取一篇笔记全文。
-每个计划节点开讲前用 kaoyan_vault_search 搜一次学习者自己的笔记（同一节点内不要重复搜）：沿用其中的讲法、符号、例题和已经记下的易错点，并在讲解里自然地点出「你笔记里写过…」。不要大段照抄笔记，也不要因为没搜到就停下。
+笔记结构：每门课在「<科目>/<课程>/」下，有 00-<课程>总览、章节笔记「NN-章名」（知识点都在这里）、题型/（跨章节方法）、公式速查/（每章一篇）。笔记里 ==高亮== 的句子和 ★ 开头的易错点，是学习者**不会、错过**的地方；没有标记的不代表一定掌握。
+- **规划前先读笔记**：用 kaoyan_vault_search 找到这次主题所在的章节笔记（必要时加上相关题型笔记、课程总览），用 kaoyan_vault_read 读**全文**；和规划用的真题检索放在同一个回合并行发出。同一会话读过的不要重复读。
+- **用笔记定重点**：高亮和 ★ 的地方优先讲、专门出题复查；笔记里写了且没标记的内容可以讲得快一些，直接用考研难度的题检测；笔记里没有、但这一章该会的内容，是这次要补的缺口。向学习者介绍计划时说明「你笔记里标了 … 不熟，这次重点练」。
+- 讲解时沿用笔记里的讲法、符号和例题，自然地点出「你笔记里写过…」；发现笔记写错了要指出来（导出笔记时会改正）。不要大段照抄笔记。
+- 计划节点的内容不在已读的笔记里时，开讲前再用 kaoyan_vault_search 搜一次；没搜到就照常讲，不要停下。
 学习者在练习或检查题里答错时，可以调用 kaoyan_log_mistake 把题目记进错题本（附错因），之后会按遗忘曲线安排重做。
 
 ## 真题题库（考研工具箱插件）
@@ -161,7 +165,7 @@ exports.activate = (ctx) => {
   /** 真题文件夹（manifest.json 所在处）；没设置时返回空串。 */
   const papersRoot = () => expandHome(settings().papersPath);
   const needPapers = (folder) => { if (!folder) fail("还没设置真题文件夹，请在 设置 → 考研工具箱 里填写，或在这里直接填文件夹路径"); return folder; };
-  const notes = createNotes({ ctx, llm, vault });
+  const notes = createNotes({ ctx, llm, vault, backupDir: path.join(ctx.dataDirectory, "noteBackups") });
   const pdf = createPdf(ctx.dataDirectory);
   const jobs = createJobs(ctx);
   const bank = createBank({ store, llm, pdf, images, getSettings: settings, getPapersRoot: () => papersRoot() });
@@ -421,7 +425,7 @@ exports.activate = (ctx) => {
       try { papers = { ok: true, items: JSON.parse(fs.readFileSync(path.join(pr, "manifest.json"), "utf8")).items.length }; }
       catch { papers = { ok: false, exists: isDir(pr) }; }
     }
-    return { root, isObsidian: has(".obsidian"), md, plans: has("计划"), concepts: has("concepts"), notes: has("笔记"), papers };
+    return { root, isObsidian: has(".obsidian"), md, plans: has("计划"), spec: fs.existsSync(path.join(root, "笔记规范", "笔记格式规范.md")), subjects: ["数学", "408", "英语", "政治"].filter(has), papers };
   });
   op("settings.save", (p) => {
     const patch = {};
@@ -472,9 +476,8 @@ exports.activate = (ctx) => {
     const chatId = str(p.chatId, 200);
     const running = exportJobs.get(chatId) && jobs.get(exportJobs.get(chatId));
     if (running?.status === "running") return running;
-    const label = p.mode === "atomic" ? "生成原子笔记" : "生成普通笔记";
-    const job = jobs.start("export", label, async ({ progress, signal }) => {
-      const d = await notes.draft({ chatId, mode: p.mode, progress, signal });
+    const job = jobs.start("export", "整理到 Obsidian 笔记", async ({ progress, signal }) => {
+      const d = await notes.draft({ chatId, progress, signal });
       setDraft(chatId, { draft: d, at: nowIso() });
       return d;
     });
