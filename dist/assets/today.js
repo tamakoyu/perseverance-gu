@@ -24,20 +24,36 @@ export function mountToday(ctx, container, signal) {
     const box = el("section", "ky-card ky-scorecard");
     if (sc.error) { put(box, el("h3", "ky-h3", "拾星"), errorBox(sc.error)); return box; }
     const f1 = (x) => (Math.round(x * 10) / 10).toFixed(1);
+    const pct = (x) => `${Math.max(0, Math.min(100, (x / 500) * 100)).toFixed(2)}%`;
     const p = sc.projection;
-    put(box,
-      el("div", "ky-sc-top",
-        el("div", null, el("div", "ky-muted", "现在去考 · 预计"), el("span", "ky-sc-num", f1(sc.total)), el("span", "ky-muted", " / 500")),
-        el("div", "ky-sc-proj", el("div", "ky-muted", "考试那天约"), el("b", null, `${Math.round(p.value)}`), el("span", "ky-muted", ` 分（${Math.round(p.low)}–${Math.round(p.high)}）`)),
-        btn("打开拾星", () => ctx.app.openView("score"), "ky-btn ky-btn-primary")));
     const v = sc.vocab || {};
+    put(box,
+      el("div", "ky-sc-head",
+        el("div", "ky-sc-title", el("span", "ky-sc-spark", "✦"), "拾星"),
+        btn("打开拾星 →", () => ctx.app.openView("score"), "ky-btn ky-sc-open")),
+      el("div", "ky-sc-top",
+        el("div", "ky-sc-metric",
+          el("div", "ky-sc-label", "现在去考 · 预计"),
+          el("div", "ky-sc-val", el("span", "ky-sc-num", f1(sc.total)), el("span", "ky-sc-of", " / 500"))),
+        el("div", "ky-sc-metric ky-sc-proj",
+          el("div", "ky-sc-label", "考试那天约"),
+          el("div", "ky-sc-val", el("span", "ky-sc-num", String(Math.round(p.value))), el("span", "ky-sc-of", ` 分 · ${Math.round(p.low)}–${Math.round(p.high)}`)))),
+      el("div", { class: "ky-sc-bar", title: `现在 ${f1(sc.total)} 分，考试那天约 ${Math.round(p.value)} 分（${Math.round(p.low)}–${Math.round(p.high)}）` },
+        el("i", { class: "ky-sc-band", style: `left:${pct(p.low)};width:calc(${pct(p.high)} - ${pct(p.low)})` }),
+        el("i", { class: "ky-sc-fill", style: `width:${pct(sc.total)}` }),
+        el("i", { class: "ky-sc-mark", style: `left:${pct(p.value)}` })));
+    const meta = el("div", "ky-sc-meta");
+    if (!sc.review.length) put(meta, el("div", null, el("span", "ky-sc-k", "复习"), "今天没有掉到该复习的考点"));
+    if (v.at || v.local) put(meta, el("div", null, el("span", "ky-sc-k", v.local ? "生词本" : "墨墨"),
+      v.local ? `有效词汇 ${v.effective} / 目标 ${v.target}（填墨墨 token 后用墨墨的数据）` : `今天要背 / 复习 ${v.due} 个词${v.progress ? `，已完成 ${v.progress.finished}/${v.progress.total}` : ""} · 有效词汇 ${v.effective} / ${v.target}`));
+    if (meta.childNodes.length) put(box, meta);
     if (sc.review.length) {
       put(box, el("div", "ky-sc-sub", `该复习了 · ${sc.reviewCount} 个考点记忆掉到 85% 以下`));
       const list = el("div", "ky-sc-list");
       for (const r of sc.review.slice(0, 6)) {
         put(list, el("div", "ky-sc-item",
-          el("span", "ky-sc-dot"),
-          el("span", null, r.name, el("span", "ky-muted", ` · ${r.subject} ${r.chapter}`)),
+          el("span", "ky-sc-dot ky-sc-dot-due"),
+          el("span", "ky-sc-name", r.name, el("span", "ky-muted", ` · ${r.subject} ${r.chapter}`)),
           el("span", "ky-muted", `记忆 ${Math.round(r.R * 100)}%`),
           btn("用真题练", async () => {
             try {
@@ -49,15 +65,14 @@ export function mountToday(ctx, container, signal) {
           }, "ky-btn ky-input-sm")));
       }
       put(box, list);
-    } else put(box, el("p", "ky-hint", "今天没有掉到该复习的考点。"));
-    if (v.at || v.local) put(box, el("p", "ky-hint", v.local ? `生词本：有效词汇 ${v.effective} / 目标 ${v.target}（填墨墨 token 后用墨墨的数据）` : `墨墨：今天要背 / 复习 ${v.due} 个词${v.progress ? `，已完成 ${v.progress.finished}/${v.progress.total}` : ""} · 有效词汇 ${v.effective} / ${v.target}`));
+    }
     if (sc.unsettled?.length) {
       put(box, el("div", "ky-sc-sub", "还没结算的学习会话"));
       const list = el("div", "ky-sc-list");
       for (const s of sc.unsettled.slice(0, 5)) {
         put(list, el("div", "ky-sc-item",
-          el("span", { class: "ky-sc-dot", style: "background:#9fb4ff;box-shadow:0 0 8px #9fb4ff" }),
-          el("button", { type: "button", class: "ky-link", onclick: () => ctx.app.openSession(s.id) }, s.title),
+          el("span", "ky-sc-dot"),
+          el("button", { type: "button", class: "ky-sc-name ky-sc-link", onclick: () => ctx.app.openSession(s.id) }, s.title),
           el("span", "ky-muted", s.settled ? "有新内容" : s.kind === "practice" ? "练习" : "教学"),
           btn("结算", () => openSettleDialog(ctx, s.id), "ky-btn ky-input-sm")));
       }

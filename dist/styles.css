@@ -544,19 +544,38 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .ky-settle-name { display: flex; flex-direction: column; font-size: 13px; } .ky-settle-name small { opacity: .55; font-size: 11px; }
 .ky-settle .ky-k-taught { background: rgba(140,110,255,.15); color: #6a4fd0; } .ky-settle .ky-k-practice { background: rgba(70,130,255,.15); color: #2f62c9; }
 /* 今日面板 · 分数卡片 */
-.ky-scorecard { position: relative; overflow: hidden; border: 0; color: #eef1ff; background: radial-gradient(120% 140% at 90% 0%, #4a2a6e 0%, #1b2160 45%, #0b1033 100%); }
-.ky-scorecard::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(1.2px 1.2px at 12% 30%, #fff, transparent), radial-gradient(1px 1px at 40% 70%, #dfe6ff, transparent), radial-gradient(1.4px 1.4px at 70% 20%, #fff, transparent), radial-gradient(1px 1px at 85% 60%, #ffe3f0, transparent), radial-gradient(1px 1px at 25% 85%, #fff, transparent), radial-gradient(1.2px 1.2px at 58% 45%, #fff, transparent); opacity: .7; pointer-events: none; }
-.ky-scorecard > * { position: relative; }
-.ky-scorecard .ky-muted, .ky-scorecard .ky-hint { color: rgba(225,230,255,.7); opacity: 1; }
-.ky-scorecard .ky-btn { border-color: rgba(190,200,255,.3); color: #eef1ff; }
-.ky-scorecard .ky-btn-primary { background: linear-gradient(135deg, #7d8cff, #c78cff); border-color: transparent; color: #fff; }
-.ky-sc-top { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: baseline; }
-.ky-sc-num { font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.ky-sc-proj b { color: #ffd9a8; font-size: 18px; }
-.ky-sc-list { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
-.ky-sc-item { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px dashed rgba(190,200,255,.15); font-size: 13px; }
-.ky-sc-dot { width: 7px; height: 7px; border-radius: 50%; background: #ffb25c; box-shadow: 0 0 8px #ffb25c; }
-.ky-sc-sub { font-size: 12px; color: #ffd3a0; margin: 10px 0 2px; }
+.ky-scorecard { --sc-accent: #c2734f; --sc-soft: color-mix(in srgb, var(--sc-accent) 14%, transparent); padding: 16px 20px 14px; border-radius: 14px; background: linear-gradient(180deg, color-mix(in srgb, var(--sc-accent) 5%, var(--background)), var(--background) 70%); }
+.ky-sc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.ky-sc-title { font-size: .78rem; letter-spacing: .12em; font-weight: 600; opacity: .7; display: flex; align-items: center; gap: 6px; }
+.ky-sc-spark { color: var(--sc-accent); font-size: .95rem; letter-spacing: 0; }
+.ky-sc-open { font-size: .82em; padding: 3px 12px; border-radius: 999px; }
+.ky-sc-open:hover { border-color: var(--sc-accent); color: var(--sc-accent); }
+.ky-sc-top { display: flex; flex-wrap: wrap; gap: 8px 0; }
+.ky-sc-metric { padding-right: 28px; }
+.ky-sc-metric + .ky-sc-metric { padding-left: 28px; border-left: 1px solid var(--border); }
+.ky-sc-label { font-size: .78rem; opacity: .6; }
+.ky-sc-val { display: flex; align-items: baseline; gap: 6px; }
+.ky-sc-num { font-size: 2.1rem; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.ky-sc-of { font-size: .85rem; opacity: .5; font-variant-numeric: tabular-nums; }
+.ky-sc-proj .ky-sc-num { color: var(--sc-accent); }
+.ky-sc-bar { position: relative; height: 6px; margin: 12px 0 4px; border-radius: 999px; background: color-mix(in srgb, var(--foreground) 7%, transparent); }
+.ky-sc-bar i { position: absolute; top: 0; bottom: 0; border-radius: 999px; }
+.ky-sc-band { background: var(--sc-soft); }
+.ky-sc-fill { left: 0; min-width: 6px; background: var(--foreground); opacity: .75; }
+.ky-sc-mark { width: 10px; height: 10px; top: -2px !important; margin-left: -5px; background: var(--background); border: 2px solid var(--sc-accent); box-sizing: border-box; }
+.ky-sc-meta { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: .85rem; }
+.ky-sc-meta > div { opacity: .8; }
+.ky-sc-k { display: inline-block; min-width: 3.2em; margin-right: 8px; font-size: .75rem; opacity: .55; }
+.ky-sc-sub { font-size: .75rem; letter-spacing: .04em; opacity: .55; margin: 14px 0 2px; padding-top: 10px; border-top: 1px solid var(--border); }
+.ky-sc-list { display: flex; flex-direction: column; }
+.ky-sc-item { display: grid; grid-template-columns: auto 1fr auto auto; gap: 10px; align-items: center; padding: 6px 0; font-size: .9rem; }
+.ky-sc-item + .ky-sc-item { border-top: 1px dashed var(--border); }
+.ky-sc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ky-sc-link { font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.ky-sc-link:hover { color: var(--sc-accent); text-decoration: underline; text-underline-offset: 3px; }
+.ky-sc-dot { width: 6px; height: 6px; border-radius: 50%; background: color-mix(in srgb, var(--foreground) 35%, transparent); }
+.ky-sc-dot-due { background: #e0a040; box-shadow: 0 0 0 3px rgba(224,160,64,.18); }
+@media (prefers-color-scheme: dark) { .ky-scorecard { --sc-accent: #e0a07c; } }
 /* 成绩单 · 对预测分的影响 */
 .ky-impact { border-radius: 12px; padding: 12px 14px; margin: 12px 0; background: linear-gradient(135deg, #141a52, #3b2463); color: #eef1ff; }
 .ky-impact .ky-up { color: #9ff0c4; } .ky-impact .ky-down { color: #ffb3ba; }
