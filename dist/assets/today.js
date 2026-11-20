@@ -1,5 +1,6 @@
 // 今日学习面板：倒计时、阶段、今日任务（从周计划挑出今天的）、到期复习、学习时长。
-import { put, reset, el, btn, select, errorBox, SUBJECTS, copy, toast } from "./ui.js";
+import { put, reset, el, btn, select, errorBox, SUBJECTS, copy, toast, waitJob } from "./ui.js";
+import { openSettleDialog } from "./score.js";
 
 const COLORS = { 数学: "#4f7cff", 408: "#18a058", 英语: "#e8a33d", 政治: "#d0505b", 其他: "#8a8f98" };
 const fmtMin = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? `${m % 60}m` : ""}` : `${m}m`);
@@ -10,9 +11,59 @@ export function mountToday(ctx, container, signal) {
 
   async function load() {
     let d;
+    const scoreP = ctx.call("score.today").catch((err) => ({ error: err }));
     try { d = await ctx.call("today"); } catch (err) { reset(root, errorBox(err)); return; }
     if (signal.aborted) return;
-    reset(root, header(d), planBlock(d), dueRow(d), timeBlock(d), tipBlock());
+    const sc = await scoreP;
+    if (signal.aborted) return;
+    reset(root, header(d), scoreBlock(sc), planBlock(d), dueRow(d), timeBlock(d), tipBlock());
+  }
+
+  // 分数判断机：预测分、今天该复习的考点、墨墨今天的单词、还没结算的会话
+  function scoreBlock(sc) {
+    const box = el("section", "ky-card ky-scorecard");
+    if (sc.error) { put(box, el("h3", "ky-h3", "拾星"), errorBox(sc.error)); return box; }
+    const f1 = (x) => (Math.round(x * 10) / 10).toFixed(1);
+    const p = sc.projection;
+    put(box,
+      el("div", "ky-sc-top",
+        el("div", null, el("div", "ky-muted", "现在去考 · 预计"), el("span", "ky-sc-num", f1(sc.total)), el("span", "ky-muted", " / 500")),
+        el("div", "ky-sc-proj", el("div", "ky-muted", "考试那天约"), el("b", null, `${Math.round(p.value)}`), el("span", "ky-muted", ` 分（${Math.round(p.low)}–${Math.round(p.high)}）`)),
+        btn("打开拾星", () => ctx.app.openView("score"), "ky-btn ky-btn-primary")));
+    const v = sc.vocab || {};
+    if (sc.review.length) {
+      put(box, el("div", "ky-sc-sub", `该复习了 · ${sc.reviewCount} 个考点记忆掉到 85% 以下`));
+      const list = el("div", "ky-sc-list");
+      for (const r of sc.review.slice(0, 6)) {
+        put(list, el("div", "ky-sc-item",
+          el("span", "ky-sc-dot"),
+          el("span", null, r.name, el("span", "ky-muted", ` · ${r.subject} ${r.chapter}`)),
+          el("span", "ky-muted", `记忆 ${Math.round(r.R * 100)}%`),
+          btn("用真题练", async () => {
+            try {
+              const q = await ctx.call("score.questions", { leaf: r.id, limit: 6 });
+              if (!q.items.length) { toast(root, "题库里没有这个考点的真题，开个练习会话让 AI 出题吧"); return; }
+              sessionStorage.setItem("ky-exam-preset", JSON.stringify({ mode: "ids", subject: r.subject, ids: q.items.map((x) => x.id), minutes: 0, title: `复习 · ${r.name}` }));
+              ctx.app.openView("exam");
+            } catch (err) { toast(root, err.message, "error"); }
+          }, "ky-btn ky-input-sm")));
+      }
+      put(box, list);
+    } else put(box, el("p", "ky-hint", "今天没有掉到该复习的考点。"));
+    if (v.at || v.local) put(box, el("p", "ky-hint", v.local ? `生词本：有效词汇 ${v.effective} / 目标 ${v.target}（填墨墨 token 后用墨墨的数据）` : `墨墨：今天要背 / 复习 ${v.due} 个词${v.progress ? `，已完成 ${v.progress.finished}/${v.progress.total}` : ""} · 有效词汇 ${v.effective} / ${v.target}`));
+    if (sc.unsettled?.length) {
+      put(box, el("div", "ky-sc-sub", "还没结算的学习会话"));
+      const list = el("div", "ky-sc-list");
+      for (const s of sc.unsettled.slice(0, 5)) {
+        put(list, el("div", "ky-sc-item",
+          el("span", { class: "ky-sc-dot", style: "background:#9fb4ff;box-shadow:0 0 8px #9fb4ff" }),
+          el("button", { type: "button", class: "ky-link", onclick: () => ctx.app.openSession(s.id) }, s.title),
+          el("span", "ky-muted", s.settled ? "有新内容" : s.kind === "practice" ? "练习" : "教学"),
+          btn("结算", () => openSettleDialog(ctx, s.id), "ky-btn ky-input-sm")));
+      }
+      put(box, list);
+    }
+    return box;
   }
 
   function header(d) {

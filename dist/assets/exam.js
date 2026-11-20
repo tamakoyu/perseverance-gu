@@ -1,4 +1,5 @@
 // 快练 / 单科分题型 / 整套全真模考。
+import { impactCard } from "./score.js";
 import { put, reset, optionsBlock, el, btn, select, field, md, errorBox, toast, runJob, tabs, photoPicker, storedImages, fmtTime, SUBJECTS, inkPad, inkOverlay, padBoard } from "./ui.js";
 
 const TYPES = {
@@ -241,6 +242,7 @@ export function mountExam(ctx, container, signal) {
       el("div", "ky-hero", el("div", "ky-hero-num", `${Math.round(res.got * 10) / 10}`), el("div", "ky-hero-text", el("div", "ky-hero-title", `/ ${res.total} 分（${pct}%）`), el("div", "ky-muted", `错题 ${res.added} 道已进错题本`))),
       el("table", "ky-table", el("tr", null, el("th", null, "题型"), el("th", null, "正确"), el("th", null, "得分")),
         ...Object.entries(byType).map(([k, v]) => el("tr", null, el("td", null, k), el("td", null, `${v.right}/${v.n}`), el("td", null, `${Math.round(v.got * 10) / 10}/${v.total}`)))),
+      impactCard(ctx, res.impact),
       el("div", "ky-row", btn("再来一套", render, "ky-btn ky-btn-primary"), btn("去错题本", () => ctx.app.openView("mistakes"))),
       list);
     for (const q of res.questions) {

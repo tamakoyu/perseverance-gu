@@ -71,7 +71,7 @@ function createProgress({ store, bank }) {
     return { subject, papers: list, types };
   }
 
-  return { record, overview };
+  return { record, overview, events };
 }
 
 module.exports = { createProgress };

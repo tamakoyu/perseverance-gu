@@ -6,9 +6,12 @@ import { mountBank } from "./assets/bank.js";
 import { mountExam } from "./assets/exam.js";
 import { mountEnglish } from "./assets/english.js";
 import { openExportDialog } from "./assets/export.js";
+import { openSettleDialog } from "./assets/score.js";
+import { mountScore } from "./assets/sky3d.js";
 
 const VIEWS = [
   ["today", "今日", mountToday, "M3 4h18v18H3z M3 10h18 M8 2v4 M16 2v4"],
+  ["score", "拾星", mountScore, "M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"],
   ["mistakes", "错题本", mountMistakes, "M4 4h12l4 4v12H4z M8 12h8 M8 16h5"],
   ["bank", "题库", mountBank, "M4 6h16 M4 12h16 M4 18h10"],
   ["exam", "快练 / 模考", mountExam, "M12 7v5l3 3 M12 3a9 9 0 1 0 0.01 0"],
@@ -42,6 +45,18 @@ export function activate(ctx) {
   });
   ctx.placeAction({ id: "topbar-export", actionId: "export-obsidian", location: "top-bar", sessions: ["teaching", "practice"] });
 
+  // 会话顶栏：结算本次学习（AI 读整段对话，按考点更新预测分）
+  ctx.registerAction({
+    id: "settle-study",
+    name: "结算本次学习",
+    icon: icon("M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"),
+    run: (context) => {
+      if (context.surface !== "session") return;
+      openSettleDialog(ctx, context.sessionId);
+    },
+  });
+  ctx.placeAction({ id: "topbar-settle", actionId: "settle-study", location: "top-bar", sessions: ["teaching", "practice"] });
+
   // 学习模式讲完（生成问题清单）后，等这一轮结束再弹出导出询问
   const pending = new Set();
   ctx.onNotification((n) => { if (n.topic === "study-report" && n.data?.chatId) pending.add(n.data.chatId); });
@@ -65,6 +80,9 @@ export function activate(ctx) {
       const exam = el("input", { class: "ky-input", type: "date", value: s.examDate });
       const study = el("input", { type: "checkbox", checked: s.studyMode });
       const ask = el("input", { type: "checkbox", checked: s.autoExportPrompt });
+      const momo = el("input", { class: "ky-input", type: "password", value: "", placeholder: s.momoTokenSet ? `${s.momoTokenHint}，留空不修改` : "墨墨开放 API token（墨墨 App → 我的 → 更多设置 → 实验功能 → 开放 API）", autocomplete: "off" });
+      const vocabTarget = el("input", { class: "ky-input", type: "number", min: 1000, max: 20000, step: 100, value: s.vocabTarget || 5500 });
+      const momoOut = el("div");
       const out = el("div");
       const picks = el("div", "ky-row");
       const conn = el("div");
@@ -111,12 +129,18 @@ export function activate(ctx) {
         picks, conn, promptBox,
         field("真题文件夹（可选）", papers, "题库「批量导入」和英语专项导入用；里面放 manifest.json，英语一在子文件夹 英语一/"),
         field("初试日期", exam, "用于倒计时，2027 年考试时间公布后改成准确日期"),
+        field("墨墨背单词 token（分数判断机的词汇分）", momo, "只保存在本机插件数据里，只发给墨墨自己的服务器；学习数据接口要在墨墨 App 里开启自动同步"),
+        el("div", "ky-row", btn("测试墨墨连接", async () => {
+          try { const r = await ctx.call("momo.test", { token: momo.value }); reset(momoOut, el("div", "ky-ok", `✓ 连上了：${r.count} 个词有学习记录`)); }
+          catch (err) { reset(momoOut, errorBox(err)); }
+        }, "ky-btn ky-btn-ghost")), momoOut,
+        field("目标词汇量", vocabTarget, "词汇分 = 已学单词的记忆总量 ÷ 目标词汇量；考研大纲约 5500 词"),
         el("label", "ky-check", study, " 启用学习模式（会话首句以【学习】开头时生效；改动后需重启 LearnHarness）"),
         el("label", "ky-check", ask, " 学习模式讲完后询问是否导出到 Obsidian"),
         el("div", "ky-row",
           btn("保存", async () => {
             try {
-              await ctx.call("settings.save", { vaultPath: vault.value, papersPath: papers.value, examDate: exam.value, studyMode: study.checked, autoExportPrompt: ask.checked });
+              await ctx.call("settings.save", { vaultPath: vault.value, papersPath: papers.value, examDate: exam.value, studyMode: study.checked, autoExportPrompt: ask.checked, vocabTarget: Number(vocabTarget.value) || 5500, ...(momo.value.trim() ? { momoToken: momo.value.trim() } : {}) });
               toast(root, "已保存");
               testConn();
             } catch (err) { toast(root, err.message, "error"); }

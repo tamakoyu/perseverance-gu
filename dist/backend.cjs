@@ -18,6 +18,9 @@ const { createPadServer } = require("./server/padserver.cjs");
 const { SETUP_PROMPT, PAPERS_PROMPT } = require("./server/setupprompt.cjs");
 const { createPack } = require("./server/pack.cjs");
 const { createProgress } = require("./server/progress.cjs");
+const { createMomo } = require("./server/momo.cjs");
+const { createScore } = require("./server/score.cjs");
+const { transcriptText } = require("./server/notes.cjs");
 
 // 路径默认留空：每个人在 设置 → 考研工具箱 里填（或点「自动检测」从 Obsidian 读取）。
 const DEFAULT_SETTINGS = {
@@ -31,6 +34,8 @@ const DEFAULT_SETTINGS = {
   sessionSubjects: {},
   exportPrompted: {},
   models: {},
+  momoToken: "",
+  vocabTarget: 5500,
 };
 
 const ERROR_TYPES = ["概念不清", "公式记错", "计算失误", "审题错误", "方法选择", "知识盲区", "其他"];
@@ -51,7 +56,7 @@ const TEACHER_STUDY = `## 学习模式（考研工具箱插件）
 2. 每讲完一步，用 quiz 出一道检查题（type: "check"），考应用不考背诵，难度贴近考研。
 3. 答错或答得含糊时：判断错因类型（${ERROR_TYPES.join(" / ")}），调用 kaoyan_log_mistake 记录，然后针对错因重讲，再换一道不同的检查题确认修复。连错两次就退回到更基础的一步。
 4. 计划里所有节点都讲完后，做一次综合小测：3–5 道检查题，每回合一道，混合考查本课各知识点，题面不提示用哪个知识点。每题都照第 3 条处理错题。
-5. 综合小测结束后，调用 kaoyan_study_report 生成问题清单，再用中文向学习者总结，并建议之后开一个练习会话做变式题。
+5. 综合小测结束后，调用 kaoyan_study_report 生成问题清单，同一回合调用 kaoyan_settle_study 结算这次学习，再用中文向学习者总结（顺带说一句预测分的变化），并建议之后开一个练习会话做变式题。
 全程用中文。`;
 
 const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插件）
@@ -64,6 +69,13 @@ const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插�
 - 讲解时沿用笔记里的讲法、符号和例题，自然地点出「你笔记里写过…」；发现笔记写错了要指出来（导出笔记时会改正）。不要大段照抄笔记。
 - 计划节点的内容不在已读的笔记里时，开讲前再用 kaoyan_vault_search 搜一次；没搜到就照常讲，不要停下。
 学习者在练习或检查题里答错时，可以调用 kaoyan_log_mistake 把题目记进错题本（附错因），之后会按遗忘曲线安排重做。
+
+## 分数判断机（考研工具箱插件）
+插件按考点估算学习者现在能考多少分。会话学习告一段落时调用 kaoyan_settle_study 结算一次（它会读整段对话、评估各考点掌握程度并更新预测分）：
+- 学习者说「今天就到这」「结束」「下次再学」之类告别的话时；
+- 学习模式综合小测和问题清单完成后；
+- 练习会话的目标都练完时。
+同一会话可以多次调用（后一次覆盖前一次，不会重复加分）。调用后用一句话告诉学习者预测分的变化。不要在会话刚开始或讲到一半时调用。
 
 ## 真题题库（考研工具箱插件）
 学习者的题库里有历年数学一、408 真题（含答案和解析），可用工具：
@@ -178,6 +190,24 @@ exports.activate = (ctx) => {
     onSubmit: (d) => { try { ctx.events.emit("pad", d); } catch { /* ignore */ } },
     onNav: (d) => { try { ctx.events.emit("pad", { ...d, nav: true }); } catch { /* ignore */ } } });
   const changed = (what) => { try { ctx.events.emit("changed", { what }); } catch { /* ignore */ } };
+  const momo = createMomo({ store, getToken: () => String(settings().momoToken || "").trim() });
+  const score = createScore({ ctx, store, bank, llm, progress, momo, getSettings: settings, transcriptText, classify: (t) => stats.classify(t) });
+  let momoSyncing = null;
+  /** 墨墨数据超过 3 小时就在后台刷新，刷新完通知页面。 */
+  const refreshMomo = (force = false) => {
+    if (!String(settings().momoToken || "").trim()) return null;
+    if (momoSyncing) return momoSyncing;
+    const before = momo.cache().at;
+    // 只有真的从墨墨拉到了新数据才通知页面刷新（否则页面加载 → 检查 → 通知 → 再加载，会无限循环）
+    momoSyncing = momo.sync({ force }).then((r) => { if (r?.at && r.at !== before) changed("score"); return r; }).finally(() => { momoSyncing = null; });
+    momoSyncing.catch(() => {});
+    return momoSyncing;
+  };
+  const impactText = (impact) => {
+    if (!impact || !impact.items.length) return "预测分没有变化。";
+    const top = impact.items.slice(0, 4).map((x) => `${x.name} ${x.delta > 0 ? "+" : ""}${x.delta.toFixed(1)}`).join("，");
+    return `预测分 ${impact.before.toFixed(1)} → ${impact.after.toFixed(1)}（${impact.delta >= 0 ? "+" : ""}${impact.delta.toFixed(1)}：${top}）。`;
+  };
 
   // ── 错题本 ─────────────────────────────────────────────
   function addMistake(input) {
@@ -331,9 +361,13 @@ exports.activate = (ctx) => {
         },
         execute: async (_id, input, signal) => {
           guard(signal);
-          const r = progress.record({ ...input, agent: context.agent, chatId: context.chatId });
+          let impact = null;
+          let r;
+          try { ({ result: r, impact } = score.measure(() => progress.record({ ...input, agent: context.agent, chatId: context.chatId }))); }
+          catch { r = progress.record({ ...input, agent: context.agent, chatId: context.chatId }); }
           if (!r) return textResult("题库里没有这个 id，没有记录。只有题库真题才需要记录。", {});
-          return textResult(`已记录：${r.q.paper} 第${r.q.number}题 ${input.correct ? "做对" : "做错"}。${input.correct ? "" : "如果还没记错题，用 kaoyan_log_mistake（带上 bankId）记进错题本。"}`, { id: r.entry.id });
+          changed("score");
+          return textResult(`已记录：${r.q.paper} 第${r.q.number}题 ${input.correct ? "做对" : "做错"}。${impact ? impactText(impact) : ""}${input.correct ? "" : "如果还没记错题，用 kaoyan_log_mistake（带上 bankId）记进错题本。"}`, { id: r.entry.id });
         },
       });
       tools.push({
@@ -359,6 +393,21 @@ exports.activate = (ctx) => {
           guard(signal);
           const m = addMistake({ ...input, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: context.agent === "practice" ? "练习会话" : "学习模式", chatId: context.chatId });
           return textResult(`已记进错题本（${m.errorType}：${m.topic}）。现在针对错因讲解，再换题检查。`, { id: m.id });
+        },
+      });
+      tools.push({
+        name: "kaoyan_settle_study",
+        label: "结算本次学习",
+        description: "会话学习告一段落时调用一次：读取本会话全文，评估各考点的掌握程度，更新考研预测分。同一会话再次调用会覆盖上一次结算。",
+        parameters: { type: "object", properties: { note: { type: "string", maxLength: 500, description: "可选：你对这次学习的简短判断" } }, additionalProperties: false },
+        execute: async (_id, _input, signal) => {
+          guard(signal);
+          if (!context.chatId) return textResult("拿不到会话编号，没有结算。", {});
+          const r = await score.settle({ chatId: context.chatId, by: "agent", signal });
+          changed("score");
+          try { ctx.events.emit("score-settled", { chatId: context.chatId }); } catch { /* ignore */ }
+          const lines = r.items.map((x) => `- ${x.name}：${x.kind === "practice" ? "练习" : "讲解"}·${x.result}${x.note ? `（${x.note}）` : ""}`);
+          return textResult(`已结算 ${r.items.length} 个考点。${impactText(r.impact)}\n${lines.join("\n")}`, { delta: r.impact.delta });
         },
       });
       if (context.agent === "teacher") {
@@ -397,7 +446,11 @@ exports.activate = (ctx) => {
   // ── 前端操作 ───────────────────────────────────────────
   const op = (name, fn) => ctx.handle(name, async (input) => fn(input === undefined || input === null ? {} : obj(input)));
 
-  op("settings.get", () => ({ settings: settings(), errorTypes: ERROR_TYPES }));
+  op("settings.get", () => {
+    const { momoToken, ...rest } = settings();
+    const t = String(momoToken || "");
+    return { settings: { ...rest, momoTokenSet: !!t, momoTokenHint: t ? `已填写（…${t.slice(-4)}）` : "" }, errorTypes: ERROR_TYPES };
+  });
   op("models.list", () => llm.catalogModels());
   op("vault.detect", () => ({ vaults: detectObsidianVaults() }));
   // 「AI 自动配置」：固定提示词，不带本机信息，复制给 agent 在任意电脑上配置。
@@ -444,6 +497,8 @@ exports.activate = (ctx) => {
     if (p.autoExportPrompt !== undefined) patch.autoExportPrompt = !!p.autoExportPrompt;
     if (p.ocrModel !== undefined) patch.ocrModel = p.ocrModel && p.ocrModel.provider && p.ocrModel.id ? { provider: str(p.ocrModel.provider, 200), id: str(p.ocrModel.id, 300) } : null;
     if (p.importConcurrency !== undefined) patch.importConcurrency = Math.max(1, Math.min(12, Number(p.importConcurrency) || 6));
+    if (p.momoToken !== undefined) patch.momoToken = str(p.momoToken, 500).trim();
+    if (p.vocabTarget !== undefined) patch.vocabTarget = Math.max(1000, Math.min(20000, Math.round(Number(p.vocabTarget) || 5500)));
     if (p.sessionSubject) patch.sessionSubjects = { ...settings().sessionSubjects, [p.sessionSubject.id]: p.sessionSubject.subject };
     return saveSettings(patch);
   });
@@ -452,6 +507,36 @@ exports.activate = (ctx) => {
   op("jobs.list", () => jobs.list());
   op("jobs.get", (p) => jobs.get(p.id));
   op("jobs.cancel", (p) => jobs.cancel(p.id));
+
+  // 分数判断机
+  op("score.overview", () => { refreshMomo(false); return score.overview(); });
+  op("score.today", () => {
+    refreshMomo(false);
+    const o = score.overview();
+    return { total: o.total, sigma: o.sigma, projection: o.projection, review: o.review.slice(0, 8), reviewCount: o.reviewCount, vocab: o.vocab, unsettled: score.unsettled() };
+  });
+  op("score.unsettled", () => ({ sessions: score.unsettled() }));
+  op("score.questions", (p) => score.questionsOf(str(p.leaf, 500), Math.max(1, Math.min(40, Number(p.limit) || 10))));
+  op("score.settle", (p) => jobs.start("settle", "结算本次学习", async (j) => {
+    const r = await score.settle({ chatId: str(p.chatId, 200), by: "button", ...j });
+    changed("score");
+    return r;
+  }));
+  op("score.classify", (p) => jobs.start("classify", "AI 归类真题考点", async (j) => { const r = await score.classifyBank({ ...j, force: !!p.force }); changed("score"); return r; }));
+  op("momo.sync", () => jobs.start("momo", "同步墨墨背单词", async () => {
+    const r = await refreshMomo(true);
+    if (!r) fail("还没填墨墨 token");
+    if (r.error) fail(r.error);
+    return { words: r.words.length, at: r.at };
+  }));
+  op("momo.test", async (p) => {
+    const token = str(p.token, 500).trim() || String(settings().momoToken || "").trim();
+    if (!token) fail("请先填墨墨 token");
+    const res = await fetch("https://open.maimemo.com/open/api/v1/memo/study/query_study_records", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ as_count: true, next_study_date: { start: "2000-01-01T00:00:00.000Z", end: "2100-01-01T00:00:00.000Z" } }), signal: AbortSignal.timeout(30000) });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) fail(`连不上墨墨：${data?.errors?.[0]?.msg || res.status}`);
+    return { count: data.data.count };
+  });
 
   // 今日 / 统计 / 考纲
   op("today", () => stats.todaySummary());
@@ -518,6 +603,7 @@ exports.activate = (ctx) => {
   });
   op("mistakes.delete", (p) => { store.remove("mistakes", p.id); changed("mistakes"); return { ok: true }; });
   op("mistakes.rate", (p) => {
+    try { ctx.events.emit("changed", { what: "score" }); } catch { /* ignore */ }
     const r = store.update("mistakes", p.id, (m) => ({
       card: fsrs.review(m.card, p.rating),
       history: [...(m.history || []), { at: nowIso(), rating: Number(p.rating), correct: p.correct ?? null, answer: str(p.answer, 4000), feedback: str(p.feedback, 4000) }],
@@ -707,7 +793,9 @@ exports.activate = (ctx) => {
     let diag = {};
     try { diag = await bank.diagnose(wrongObjective.map((q) => ({ q, ans: answers[q.id] })), signal); } catch { diag = {}; }
     wrongObjective.forEach((q, i) => { if (diag[i]) Object.assign(results[q.id], { errorType: diag[i].errorType, diagnosis: diag[i].diagnosis }); });
-    // 错题自动进错题本
+    // 错题自动进错题本；前后各算一次分数，看这次练习对预测分的影响
+    let before = null;
+    try { before = score.evaluate(Date.now(), { detail: false }); } catch { before = null; }
     const label = attempt.paper || `${attempt.subject}${attempt.mode === "quick" ? "快练" : "专项"}`;
     let added = 0;
     for (const q of qs) {
@@ -732,8 +820,12 @@ exports.activate = (ctx) => {
     acts.push({ at: nowIso(), subject: attempt.subject, minutes: Math.round(elapsed / 60), kind: attempt.mode });
     store.saveList("activity", acts);
     changed("mistakes");
+    changed("score");
+    let impact = null;
+    try { if (before) impact = score.diff(before, score.evaluate(Date.now(), { detail: false })); } catch { impact = null; }
+    if (impact) store.update("attempts", attempt.id, { impact: { before: impact.before, after: impact.after, delta: impact.delta, items: impact.items.slice(0, 30) } });
     const full = qs.map((q) => ({ ...bank.forExam(q, {}), answer: q.answer, analysis: q.analysis, analysisSource: q.analysisSource || "" }));
-    return { attemptId: attempt.id, results, total, got, added, questions: full };
+    return { attemptId: attempt.id, results, total, got, added, questions: full, impact };
   }));
   op("quiz.history", () => store.list("attempts").filter((a) => a.status === "done").map(({ answers, results, ...a }) => a).reverse().slice(0, 100));
 
