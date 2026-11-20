@@ -464,10 +464,37 @@ exports.activate = (ctx) => {
   op("vault.search", (p) => vault.search(p.query, { limit: 20, includePlans: true }));
   op("vault.read", (p) => vault.read(p.path));
   op("vault.folders", () => vault.folders());
-  op("export.draft", (p) => jobs.start("export", "生成笔记", async () => notes.draft({ chatId: str(p.chatId, 200), mode: p.mode })));
+  // 导出草稿：生成任务在后台跑，结果落盘（data/exportDrafts.json），关掉窗口也能回来接着改
+  const exportJobs = new Map(); // chatId → jobId（本次运行内）
+  const drafts = () => store.value("exportDrafts", {});
+  const setDraft = (chatId, v) => { const all = drafts(); if (v) all[chatId] = v; else delete all[chatId]; store.saveValue("exportDrafts", all); };
+  op("export.draft", (p) => {
+    const chatId = str(p.chatId, 200);
+    const running = exportJobs.get(chatId) && jobs.get(exportJobs.get(chatId));
+    if (running?.status === "running") return running;
+    const label = p.mode === "atomic" ? "生成原子笔记" : "生成普通笔记";
+    const job = jobs.start("export", label, async ({ progress, signal }) => {
+      const d = await notes.draft({ chatId, mode: p.mode, progress, signal });
+      setDraft(chatId, { draft: d, at: nowIso() });
+      return d;
+    });
+    exportJobs.set(chatId, job.id);
+    return job;
+  });
+  op("export.status", (p) => {
+    const chatId = str(p.chatId, 200);
+    const id = exportJobs.get(chatId);
+    const job = id ? jobs.get(id) : null;
+    const saved = drafts()[chatId] || null;
+    return { job: job?.status === "running" ? job : null, draft: saved?.draft || null, at: saved?.at || null, error: job?.status === "failed" ? job.error : null };
+  });
+  op("export.discard", (p) => { setDraft(str(p.chatId, 200), null); return { ok: true }; });
   op("export.save", (p) => {
     const r = notes.save({ notes: p.notes, overwrite: p.overwrite || [] });
-    if (p.chatId && r.results.every((x) => x.written)) saveSettings({ exportPrompted: { ...settings().exportPrompted, [p.chatId]: "exported" } });
+    if (p.chatId && r.results.every((x) => x.written)) {
+      saveSettings({ exportPrompted: { ...settings().exportPrompted, [p.chatId]: "exported" } });
+      setDraft(str(p.chatId, 200), null);
+    }
     return r;
   });
   op("export.dismiss", (p) => saveSettings({ exportPrompted: { ...settings().exportPrompted, [str(p.chatId, 200)]: "skipped" } }));

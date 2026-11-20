@@ -45,19 +45,23 @@ const RULES = `文件夹规则：
 - 课程名优先使用已有文件夹里的名字（高数、线代、概率论、数据结构、计组、操作系统、计算机网络、C语言 等），没有合适的再新建。`;
 
 function createNotes({ ctx, llm, vault }) {
-  async function draft({ chatId, mode }) {
+  async function draft({ chatId, mode, progress = () => {}, signal }) {
     if (!["atomic", "normal"].includes(mode)) fail("mode 必须是 atomic 或 normal");
+    progress(1, 4, "读取会话记录");
     const record = ctx.learning.getSession(chatId);
     if (!record) fail("找不到这个会话");
     const transcript = transcriptText(record);
     if (transcript.length < 200) fail("这个会话内容太少，暂时没有可导出的笔记");
+    progress(2, 4, "整理已有文件夹和笔记");
     let folders = [];
     let existing = [];
     try { folders = vault.folders(); existing = vault.titles().slice(0, 400); } catch (err) { fail(err.message); }
     const want = mode === "atomic"
       ? "生成若干篇原子笔记（每个核心概念一篇，通常 3–8 篇）。"
       : "生成一篇普通笔记，完整梳理本次会话。";
+    progress(3, 4, `模型正在写笔记（会话约 ${Math.round(transcript.length / 1000)}k 字，通常 1–3 分钟）`);
     const result = await llm.json({
+      signal,
       system: `你把一次考研辅导会话整理成学习者的 Obsidian 笔记。\n${STYLE}\n${RULES}`,
       text: `${want}
 今天日期：${today()}；会话标题：${record.title || ""}
@@ -74,6 +78,7 @@ ${existing.join("\n")}
 ${transcript}`,
       maxTokens: 16000,
     });
+    progress(4, 4, "整理生成结果");
     if (!result || !Array.isArray(result.notes) || !result.notes.length) fail("模型没有生成笔记，请重试");
     const notes = result.notes.map((n) => ({
       folder: String(n.folder || "").replace(/^\/+|\/+$/g, ""),

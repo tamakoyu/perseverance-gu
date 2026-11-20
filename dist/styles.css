@@ -381,3 +381,27 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .ky-bp-chip.ky-bp-mis::before { content: ""; position: absolute; top: 2px; right: 2px; width: 6px; height: 6px; border-radius: 50%; background: #d0505b; }
 .ky-bp-misdot { background: #d0505b; border-radius: 50%; width: 8px; height: 8px; }
 .ky-bp-wrong { background: color-mix(in srgb, #d0505b 65%, transparent); }
+
+/* 导出到 Obsidian：浮动窗口（拖动标题栏、右下角缩放、最小化成小条） */
+.ky-fwin { position: fixed; z-index: 9000; display: flex; flex-direction: column; min-width: 320px; min-height: 160px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); resize: both; overflow: hidden; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 0; margin: 0; box-sizing: border-box; }
+.ky-fwin-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 14px; border-bottom: 1px solid var(--border); cursor: move; user-select: none; flex: none; }
+.ky-fwin-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
+.ky-fwin-status { font-size: 12px; opacity: .65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ky-fwin-sp { flex: 1; }
+.ky-fwin-btn { font: inherit; font-size: 14px; line-height: 1; width: 26px; height: 24px; border: none; border-radius: 6px; background: none; color: inherit; cursor: pointer; opacity: .7; }
+.ky-fwin-btn:hover { opacity: 1; background: color-mix(in srgb, var(--foreground) 10%, transparent); }
+.ky-fwin-body { flex: 1; overflow: auto; padding: 10px 16px 16px; }
+.ky-fwin-min { height: auto !important; width: 300px !important; min-height: 0; resize: none; }
+.ky-fwin-min .ky-fwin-body { display: none; }
+.ky-fwin-min .ky-fwin-bar { border-bottom: none; }
+.ky-fwin-max { left: 12px !important; top: 12px !important; width: calc(100vw - 24px) !important; height: calc(100vh - 24px) !important; resize: none; }
+.ky-progress-lg { height: 8px; margin: 10px 0; }
+.ky-progress-smooth { animation: none; transition: width .5s linear; }
+.ky-steps { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.ky-step { display: flex; align-items: center; gap: 8px; opacity: .5; }
+.ky-step-dot { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid currentColor; flex: none; box-sizing: border-box; }
+.ky-step-on { opacity: 1; font-weight: 600; }
+.ky-step-on .ky-step-dot { background: currentColor; animation: ky-pulse 1.4s ease-in-out infinite; }
+.ky-step-done { opacity: .8; }
+.ky-step-done .ky-step-dot { background: #18a058; border-color: #18a058; }
+.ky-toast-btn { border: none; cursor: pointer; font: inherit; font-size: 13px; }
