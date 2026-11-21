@@ -14,6 +14,7 @@ function transcriptText(record, max = 60000) {
         const q = a.question || a.prompt || a.stem || a.text;
         if (q) return `【${p.name}】${typeof q === "string" ? q : JSON.stringify(q)}${a.options ? `\n选项：${JSON.stringify(a.options)}` : ""}`;
         if (p.name === "probe_done" || p.name === "kaoyan_study_report") return `【${p.name}】${JSON.stringify(a).slice(0, 3000)}`;
+        if (p.name === "kaoyan_log_paper") return `【讲题批改】${(a.items || []).map((it) => `第${it.number}题 ${it.correct ? "对" : "错"}${it.score != null ? ` ${it.score}${it.fullScore != null ? `/${it.fullScore}` : ""}分` : ""} ${it.topic || ""}${it.correct ? "" : `（${it.errorType || ""}：${it.diagnosis || ""}）`}`).join("；").slice(0, 3000)}`;
         return "";
       }
       return "";

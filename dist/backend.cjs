@@ -20,6 +20,7 @@ const { createPack } = require("./server/pack.cjs");
 const { createProgress } = require("./server/progress.cjs");
 const { createMomo } = require("./server/momo.cjs");
 const { createScore } = require("./server/score.cjs");
+const { createPaper } = require("./server/paper.cjs");
 const { transcriptText } = require("./server/notes.cjs");
 
 // 路径默认留空：每个人在 设置 → 考研工具箱 里填（或点「自动检测」从 Obsidian 读取）。
@@ -110,6 +111,38 @@ const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插�
 - 学习者说「复习」或测底显示已经学过时，起点就是考研难度：基础定义一句带过，直接从易错点和真题考法讲起。
 - 学习者说太简单 / 太难时，立刻按他说的调整。`;
 
+const PAPER_MARKER = "本会话里学习者发来了**做过的**题目照片（照片上能看到学习者自己的作答痕迹：手写答案、演算过程、勾选的选项），或者消息以「【讲题】」开头";
+
+const PROBER_PAPER = `## 讲题模式（考研工具箱插件）
+判断：只有当${PAPER_MARKER}时，本节才生效；否则忽略本节。照片上只有题目、没有作答痕迹的，不算讲题模式。
+讲题模式下，学习者已经把题做完了，要的是批改和讲错题，不需要测底：
+- 不出摸底题，不调用 probe / recall，不问问题。
+- 在你的第一个回合里直接调用 probe_done。assessment.strands 列出照片里这些题涉及的知识线（扫一眼题目就行，不要判卷）；每条的 assessment 写「讲题模式：以学习者交来的作答为准，由老师判卷后确定」。summary 写「讲题模式：学习者交来 N 张做过的题目照片（科目 / 大致内容），先判卷、记错题，再逐题讲错题，最后按错因知识点巩固」。
+- 调用成功后用一句中文告诉学习者马上开始批改，然后结束回合。`;
+
+const TEACHER_PAPER = `## 讲题模式（考研工具箱插件；本节优先于学习模式和通用的规划规则）
+判断：只有当${PAPER_MARKER}，或测底总结里写有「讲题模式」时，本节才生效；否则忽略本节。照片上只有题目、没有作答痕迹的，按平常讲题处理，不用本节。
+学习者交来的是自己做完的试卷或练习题（一般不是真题，**不要去题库里找原题对答案**，你自己判）。流程固定为「判卷 → 记错题 → 逐题讲错题 → 按错因知识点巩固 → 结算」：
+
+1. **判卷**（第一个回合）：逐张看照片，按题号找出全部题目。对每道题：读懂题干，看清学习者的最终答案和演算过程，然后**自己独立完整地解一遍**（不要被学习者的答案带偏），再判对错。
+   - 选择 / 填空看最终答案；解答题按考研阅卷习惯按步骤给分，思路对但算错、缺步骤给部分分。题目上标了分值就用标的分值，没标就按考研常见分值估（选择 / 填空 5 分，解答题 10–12 分），并在表里注明「估」。
+   - 照片上有红笔批改时可以参考，但仍要自己核对。字迹看不清、题目被遮挡的地方直接问学习者，不要猜。
+   - 做对但过程有隐患（蒙对、思路绕远、关键步骤缺论证）的，算做对，在表里备注「对·有隐患」。
+2. **错因**：每道错题找到**第一处**出错的步骤，归到错因类型（${ERROR_TYPES.join(" / ")}），知识点写具体（「定积分换元：换元后上下限没跟着换」，不要只写「积分」）。diagnosis 写清楚错在哪一步、学习者写的是什么、为什么错。
+3. **记录**：判完后在同一回合调用一次 kaoyan_log_paper，items 里放**全部**题目（做对的也放，correct: true，带得分和知识点）；做错的写全题目原文、学习者作答、正确答案与关键步骤、错因、诊断。pages 填这道题在第几张照片上（按本会话里学习者发图的先后从 1 数起，跨页就写多张）。错题会自动进错题本（不要再对这些题调用 kaoyan_log_mistake），原题图片会在后台自动裁好。
+4. **批改表**：用一张 Markdown 表告诉学习者结果：题号｜对错｜得分｜知识点｜错因（一句话）；表下写总分和错因分布。然后说「哪道判得不对直接告诉我」。学习者纠正后，**只带被改的题**再调用一次 kaoyan_log_paper（按题号覆盖；改成做对会从错题本里删掉）。全对时直接表扬，问要不要讲「对·有隐患」的题，然后结算收尾。
+5. **规划**（和批改表同一回合，教学会话用 plan_init）：每道错题一个节点，按卷面顺序，标题如「第3题·换元换限」；同一知识点错了多道题的，这几道连成一串。再为每个错因知识点加一个「巩固：<知识点>」节点，依赖对应的错题节点，放在后面。几道题错因相同就合并成一个巩固节点。节点标题不超过 16 个字。
+6. **逐题讲错题**（每个错题节点）：
+   - 先简短复述题目，再指出学习者是在哪一步错的（引用他写的那一步），讲清楚为什么错、正确该怎么想，再把正确解法一步一行写完整。
+   - 讲完出一道检查题：和原题同考法，换数据或换条件，考研难度。答对进入下一题；答错就判断错因、调用 kaoyan_log_mistake 记录，针对错因再讲一次，换一道同难度变式确认。
+   - 只讲做错的题；做对的不讲，除非学习者要求。
+7. **按错因知识点巩固**（每个巩固节点）：
+   - 先用 kaoyan_vault_search 找这个知识点所在的章节笔记、用 kaoyan_vault_read 读全文（多个知识点的检索在同一回合并行发出），沿用笔记里的讲法；笔记里有 ==高亮== / ★ 的地方重点讲。
+   - 系统地讲这个知识点：定义 / 条件 / 结论、常见陷阱，结合这次几道错题的错法说明「你这里容易错在 …」。
+   - 再出 1–2 道考研难度的综合变式题（可以用 kaoyan_bank_search 找真题当素材，原题或改编都行；用了题库原题就按真题规则调用 kaoyan_bank_record），都答对才算这个点过关。
+8. **收尾**：全部节点完成后调用 kaoyan_settle_study 结算，再用中文总结：这张卷子的得分、错因分布、已经补上的知识点、仍然不稳的点；提醒学习者可以点顶栏「导出到 Obsidian」把这次的易错点记进笔记（真错过的会标 ★）。
+全程用中文。`;
+
 /** 支持 ~ 开头的路径。 */
 function expandHome(p) {
   const s = String(p || "").trim();
@@ -192,6 +225,7 @@ exports.activate = (ctx) => {
   const changed = (what) => { try { ctx.events.emit("changed", { what }); } catch { /* ignore */ } };
   const momo = createMomo({ store, getToken: () => String(settings().momoToken || "").trim() });
   const score = createScore({ ctx, store, bank, llm, progress, momo, getSettings: settings, transcriptText, classify: (t) => stats.classify(t) });
+  const paper = createPaper({ ctx, store, llm, pdf, images, bank, addMistake: (input) => addMistake(input), changed });
   let momoSyncing = null;
   /** 墨墨数据超过 3 小时就在后台刷新，刷新完通知页面。 */
   const refreshMomo = (force = false) => {
@@ -259,6 +293,8 @@ exports.activate = (ctx) => {
 
   // ── 智能体规则与工具 ───────────────────────────────────
   ctx.registerInstructions({ agents: ["teacher", "practice"], text: VAULT_TEXT });
+  ctx.registerInstructions({ agents: ["teacher", "practice"], text: TEACHER_PAPER });
+  ctx.registerInstructions({ agents: ["prober"], text: PROBER_PAPER });
   if (settings().studyMode) {
     ctx.registerInstructions({ agents: ["prober"], text: PROBER_STUDY });
     ctx.registerInstructions({ agents: ["teacher"], text: TEACHER_STUDY });
@@ -393,6 +429,59 @@ exports.activate = (ctx) => {
           guard(signal);
           const m = addMistake({ ...input, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: context.agent === "practice" ? "练习会话" : "学习模式", chatId: context.chatId });
           return textResult(`已记进错题本（${m.errorType}：${m.topic}）。现在针对错因讲解，再换题检查。`, { id: m.id });
+        },
+      });
+      tools.push({
+        name: "kaoyan_log_paper",
+        label: "记录讲题批改",
+        description: "讲题模式专用：学习者发来做过的试卷 / 题目照片、你判完卷后调用一次。items 放全部题目的批改结果（做对的也放）；做错的自动进错题本（附从照片里裁出的原题图），不要再对它们调用 kaoyan_log_mistake。学习者纠正判卷结果时，只带被改的题再调用（按题号覆盖）。",
+        parameters: {
+          type: "object",
+          properties: {
+            title: { type: "string", maxLength: 200, description: "这份卷子 / 练习的名字，如「高数第三章测验」「线代练习 5」；看不出就写主要内容" },
+            subject: { type: "string", enum: ["数学", "408", "英语", "政治"] },
+            items: {
+              type: "array",
+              minItems: 1,
+              maxItems: 100,
+              items: {
+                type: "object",
+                properties: {
+                  number: { type: "string", minLength: 1, maxLength: 30, description: "题号，按卷面写，如「3」「17(2)」" },
+                  correct: { type: "boolean", description: "是否做对（部分得分算 false）" },
+                  score: { type: "number", minimum: 0, maximum: 200, description: "这道题得分" },
+                  fullScore: { type: "number", minimum: 0, maximum: 200, description: "这道题满分" },
+                  topic: { type: "string", minLength: 1, maxLength: 200, description: "知识点（做错时写错因所在的具体知识点）" },
+                  pages: { type: "array", items: { type: "integer", minimum: 1, maximum: 200 }, maxItems: 4, description: "这道题在本会话学习者发的第几张照片上（从 1 数起）" },
+                  question: { type: "string", maxLength: 8000, description: "做错时必填：题目原文（可含 LaTeX）" },
+                  learnerAnswer: { type: "string", maxLength: 4000, description: "做错时必填：学习者的作答与关键过程" },
+                  correctAnswer: { type: "string", maxLength: 8000, description: "做错时必填：正确答案与关键步骤" },
+                  errorType: { type: "string", enum: ERROR_TYPES, description: "做错时必填" },
+                  diagnosis: { type: "string", maxLength: 2000, description: "做错时必填：第一处错在哪一步、为什么错" },
+                },
+                required: ["number", "correct", "topic"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["items"],
+          additionalProperties: false,
+        },
+        execute: async (_id, input, signal) => {
+          guard(signal);
+          if (!context.chatId) return textResult("拿不到会话编号，没有记录。", {});
+          const r = await paper.log({ chatId: context.chatId, agent: context.agent, input });
+          const wrong = r.rows.filter((x) => !x.correct);
+          const rev = r.review;
+          const lines = [
+            `已记录 ${r.rows.length} 道题（这次调用里做错 ${wrong.length} 道${wrong.length ? `：第 ${wrong.map((x) => x.number).join("、")} 题，已进错题本` : ""}）。`,
+            rev.total != null ? `整份目前得分 ${rev.got}/${rev.total}。` : "",
+            wrong.some((x) => x.pages.length) ? "原题图片正在后台从照片里裁剪。" : "",
+            !r.imageCount && wrong.length ? "注意：本会话里没找到学习者发的照片，错题只存了文字。" : "",
+            wrong.some((x) => !x.pages.length) && r.imageCount ? "有错题没填 pages，没附原题图；可以补上 pages 再调用一次。" : "",
+            "现在给学习者看批改表，并按讲题模式规划。",
+          ];
+          return textResult(lines.filter(Boolean).join(""), { reviewId: rev.id, wrong: wrong.map((x) => x.mistakeId) });
         },
       });
       tools.push({
@@ -592,7 +681,8 @@ exports.activate = (ctx) => {
   });
 
   // 错题本
-  op("mistakes.list", () => ({ items: store.list("mistakes"), reports: store.list("reports") }));
+  op("mistakes.list", () => ({ items: store.list("mistakes"), reports: store.list("reports"), reviews: store.list("reviews") }));
+  op("reviews.delete", (p) => { store.remove("reviews", str(p.id, 100)); changed("reviews"); return { ok: true }; });
   op("mistakes.add", (p) => addMistake(p));
   op("mistakes.update", (p) => {
     const allowed = ["subject", "topic", "question", "learnerAnswer", "correctAnswer", "errorType", "diagnosis", "archived", "source"];

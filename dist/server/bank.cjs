@@ -857,7 +857,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     return out;
   }
 
-  return { all, transcribe, search, fixMath, warnings, problems, fillAnalyses, missingAnalysis, cropFigures, missingFigures, pictures, papers, select, generate, forExam, materialsOf, importText, importImages, importPdf, importManifest, gradeOne, diagnose, CHOICE_TYPES, READING_ERRORS, GENERAL_ERRORS, SUBJECTS };
+  return { figureModel, normBox, all, transcribe, search, fixMath, warnings, problems, fillAnalyses, missingAnalysis, cropFigures, missingFigures, pictures, papers, select, generate, forExam, materialsOf, importText, importImages, importPdf, importManifest, gradeOne, diagnose, CHOICE_TYPES, READING_ERRORS, GENERAL_ERRORS, SUBJECTS };
 }
 
 module.exports = { createBank };

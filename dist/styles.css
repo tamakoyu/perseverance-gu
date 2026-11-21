@@ -884,3 +884,5 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .ky-tag-ok { color: #2f9e68; border-color: color-mix(in srgb, #2f9e68 40%, transparent); }
 .ky-tag-warn { color: #c07a1f; border-color: color-mix(in srgb, #c07a1f 40%, transparent); }
 .ky-tag-muted { opacity: .6; }
+.ky-md-cell, .ky-md-cell * { font-size: inherit !important; line-height: 1.5; }
+.ky-md-cell p { margin: 0; }

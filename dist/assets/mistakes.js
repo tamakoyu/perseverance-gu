@@ -5,9 +5,9 @@ export function mountMistakes(ctx, container, signal) {
   const root = el("div", "ky-root");
   put(container, root);
   let tab = "due";
-  let data = { items: [], reports: [] };
+  let data = { items: [], reports: [], reviews: [] };
   let errorTypes = [];
-  let filter = { subject: "", errorType: "", q: "", archived: false };
+  let filter = { subject: "", errorType: "", source: "", q: "", archived: false };
   const body = el("div");
   // 「今日重做」共用一块新窗口白板（可拖到 iPad）：换到下一道错题时白板自动跟过去
   const board = padBoard(ctx, { key: "mistakes:redo", title: "错题重做", when: "判分时", tip: "在系统浏览器里开一块白板（可拖到 iPad）。只开一次，做完一道换下一道时白板会自动跟过去；写完点「发送到本题」" });
@@ -26,11 +26,12 @@ export function mountMistakes(ctx, container, signal) {
   function render() {
     reset(root, 
       el("h2", "ky-h2", "错题本"),
-      tabs([["due", `今日重做（${due().length}）`], ["all", `全部（${data.items.filter((m) => !m.archived).length}）`], ["reports", `问题清单（${data.reports.length}）`], ["add", "录入错题"]], tab, (k) => { tab = k; render(); }),
+      tabs([["due", `今日重做（${due().length}）`], ["all", `全部（${data.items.filter((m) => !m.archived).length}）`], ["reviews", `讲题记录（${(data.reviews || []).length}）`], ["reports", `问题清单（${data.reports.length}）`], ["add", "录入错题"]], tab, (k) => { tab = k; render(); }),
       body);
     reset(body);
     if (tab === "due") renderDue();
     else if (tab === "all") renderAll();
+    else if (tab === "reviews") renderReviews();
     else if (tab === "reports") renderReports();
     else renderAdd();
   }
@@ -107,12 +108,14 @@ export function mountMistakes(ctx, container, signal) {
     const bar = el("div", "ky-row ky-filters",
       select([["", "全部科目"], ...SUBJECTS], filter.subject, (v) => { filter.subject = v; render(); }),
       select([["", "全部错因"], ...[...new Set([...errorTypes, ...data.items.map((m) => m.errorType)])]], filter.errorType, (v) => { filter.errorType = v; render(); }),
+      select([["", "全部来源"], ...[...new Set(data.items.map((m) => m.source).filter(Boolean))]], filter.source, (v) => { filter.source = v; render(); }),
       (() => { const i = el("input", { class: "ky-input", placeholder: "搜索题目 / 考点", value: filter.q }); i.addEventListener("change", () => { filter.q = i.value; render(); }); return i; })(),
       el("label", "ky-check", (() => { const c = el("input", { type: "checkbox", checked: filter.archived }); c.addEventListener("change", () => { filter.archived = c.checked; render(); }); return c; })(), " 显示已归档"));
     put(body, bar);
     const items = data.items.filter((m) => (filter.archived || !m.archived)
       && (!filter.subject || m.subject === filter.subject)
       && (!filter.errorType || m.errorType === filter.errorType)
+      && (!filter.source || m.source === filter.source)
       && (!filter.q || `${m.topic} ${m.question}`.includes(filter.q))).reverse();
     const counts = {};
     for (const m of items) counts[m.errorType] = (counts[m.errorType] || 0) + 1;
@@ -163,6 +166,42 @@ export function mountMistakes(ctx, container, signal) {
   }
 
   // ── 问题清单 ─────────────────────────────────────────
+  // ── 讲题记录：会话里拍照交卷、老师判卷后的批改表 ─────────
+  function renderReviews() {
+    const list = (data.reviews || []).slice().sort((a, b) => Date.parse(b.updatedAt || b.createdAt) - Date.parse(a.updatedAt || a.createdAt));
+    if (!list.length) { put(body, el("p", "ky-empty", "在讲课 / 练习会话里直接发做完的试卷或题目照片（也可以以「【讲题】」开头），老师判完卷后批改表会出现在这里，错题自动进错题本。")); return; }
+    const byId = new Map(data.items.map((m) => [m.id, m]));
+    for (const r of list) {
+      const wrong = r.items.filter((x) => !x.correct).length;
+      const det = el("details", "ky-card");
+      put(det, el("summary", "ky-sum",
+        r.subject ? el("span", "ky-tag", r.subject) : null,
+        el("b", null, r.title || "讲题"),
+        el("span", "ky-muted", `${fmtTime(r.updatedAt || r.createdAt)} · ${r.items.length} 题 · 错 ${wrong} 题${r.total != null ? ` · ${r.got}/${r.total} 分` : ""}`)));
+      det.addEventListener("toggle", () => {
+        if (!det.open || det.dataset.filled) return;
+        det.dataset.filled = "1";
+        const counts = {};
+        for (const x of r.items) if (!x.correct && x.errorType) counts[x.errorType] = (counts[x.errorType] || 0) + 1;
+        put(det,
+          Object.keys(counts).length ? el("div", "ky-pills", ...Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => el("span", "ky-pill", `${k} ${v}`))) : null,
+          el("table", "ky-table",
+            el("tr", null, el("th", null, "题号"), el("th", null, "对错"), el("th", null, "得分"), el("th", null, "知识点"), el("th", null, "错因")),
+            ...r.items.map((x) => el("tr", null,
+              el("td", null, x.number),
+              el("td", { class: x.correct ? "ky-ok" : "ky-bad" }, x.correct ? "✓" : "✗"),
+              el("td", null, x.score != null ? `${x.score}${x.fullScore != null ? `/${x.fullScore}` : ""}` : "—"),
+              el("td", null, x.topic || "—"),
+              el("td", null, x.correct ? "" : md(ctx, [x.errorType, byId.get(x.mistakeId)?.diagnosis].filter(Boolean).join("：") || "—", signal, "ky-md ky-md-cell"))))),
+          el("div", "ky-row",
+            btn("打开会话", () => ctx.app.openSession(r.chatId), "ky-btn ky-btn-ghost"),
+            wrong ? btn("在错题本里看这些错题", () => { filter = { ...filter, source: "讲题会话", q: "" }; tab = "all"; render(); }, "ky-btn ky-btn-ghost") : null,
+            btn("删除这条记录", async () => { if (confirm("只删除批改记录，错题本里的错题保留。确定？")) { await ctx.call("reviews.delete", { id: r.id }); load(); } }, "ky-btn ky-btn-danger")));
+      });
+      put(body, det);
+    }
+  }
+
   function renderReports() {
     if (!data.reports.length) { put(body, el("p", "ky-empty", "完成一次学习模式（【学习】开头的讲课会话）的综合小测后，问题清单会出现在这里。")); return; }
     for (const r of data.reports.slice().reverse()) {
@@ -239,7 +278,7 @@ export function mountMistakes(ctx, container, signal) {
     return form;
   }
 
-  const off = ctx.onNotification((n) => { if (n.topic === "changed" && n.data?.what === "mistakes" && tab !== "due" && tab !== "add") load(); });
+  const off = ctx.onNotification((n) => { if (n.topic === "changed" && ["mistakes", "reviews"].includes(n.data?.what) && tab !== "due" && tab !== "add") load(); });
   signal.addEventListener("abort", off);
   put(root, el("p", "ky-muted", "加载中…"));
   load();
