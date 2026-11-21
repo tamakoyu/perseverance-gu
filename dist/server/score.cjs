@@ -12,6 +12,8 @@
 //   第一次讲懂 S≈10 天、练对≈20 天、真题做对≈30 天；隔开复习成功一次 S 变成约 1.6–2.6 倍。
 const { uid, nowIso, today, str, fail } = require("./util.cjs");
 const { buildFrame } = require("./scoreframe.cjs");
+const vocablist = require("./vocablist.cjs");
+const { retention } = require("./momo.cjs");
 
 const DAY = 86400000;
 const KIND = {
@@ -133,18 +135,46 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
     return st;
   }
 
+  /** 词汇：考研词表里的每个词按真题词频固定分四档；每档的掌握度＝这一档里每个词还记得的概率之和 / 这一档的词数。 */
   function vocabNow(target, at = Date.now()) {
-    const v = momo.vocabState(target, at);
-    if (v.at) return v;
-    // 没接墨墨：用插件自己的生词本
-    const words = store.list("vocab");
-    let sum = 0;
-    for (const w of words) {
-      const c = w.card;
-      if (!c?.last || !c.stability) continue;
-      sum += Math.pow(1 + (19 / 81) * ((at - Date.parse(c.last)) / DAY) / c.stability, -0.5);
+    const mv = momo.vocabState(target, at);
+    let base, learnedWords;
+    if (mv.at) {
+      base = mv;
+      learnedWords = (momo.cache().words || []).filter((w) => w.last).map((w) => ({ s: w.s, R: retention(w, at), n: w.n }));
+    } else {
+      // 没接墨墨：用插件自己的生词本
+      const words = store.list("vocab");
+      learnedWords = words.filter((w) => w.card?.last && w.card.stability).map((w) => ({ s: w.word, n: w.card.reps || 1, R: Math.pow(1 + (19 / 81) * ((at - Date.parse(w.card.last)) / DAY) / w.card.stability, -0.5) }));
+      base = { at: null, local: true, total: words.length, due: 0, strong: 0, weak: 0, error: mv.error || "" };
     }
-    return { at: null, local: true, target, total: words.length, learned: words.filter((w) => w.card?.last).length, effective: Math.round(sum), mastery: Math.min(1, sum / target), due: 0, strong: 0, weak: 0, error: v.error || "" };
+    const vl = vocablist.freqOf(bank.all());
+    const bands = Object.fromEntries(vocablist.BANDS.map((b) => [b.key, { key: b.key, name: b.name, desc: b.desc, size: vl.members[b.key].length, weight: b.weight, learned: 0, sumR: 0, list: [], seen: new Set() }]));
+    for (const w of learnedWords) {
+      const b = vocablist.base(w.s);
+      if (!b) continue;
+      const band = bands[vl.bandOf.get(b)];
+      if (band.seen.has(b)) continue;
+      band.seen.add(b);
+      band.learned++; band.sumR += w.R;
+      band.list.push({ s: b, R: Math.round(w.R * 100) / 100, n: w.n, f: vl.freq[b] || 0 });
+    }
+    // 初中基础词：背过的用实际记忆率，没背过的默认已掌握
+    for (const b of Object.values(bands)) {
+      b.basic = 0;
+      for (const w of vl.members[b.key]) if (vocablist.BASIC.has(w) && !b.seen.has(w)) { b.basic++; b.sumR += vocablist.BASIC_R; b.seen.add(w); }
+    }
+    const totalW = Object.values(bands).reduce((a, b) => a + b.size * b.weight, 0) || 1;
+    let mastery = 0, learned = 0, effective = 0;
+    for (const b of Object.values(bands)) {
+      b.share = (b.size * b.weight) / totalW; // 这一档占词汇分的比例
+      b.m = b.size ? b.sumR / b.size : 0;
+      mastery += b.share * b.m; learned += b.learned; effective += b.sumR;
+      b.weakest = b.list.sort((x, y) => x.R - y.R).slice(0, 24);
+      b.todo = vl.members[b.key].filter((w) => !b.seen.has(w)).slice(0, 24).map((s) => ({ s, f: vl.freq[s] || 0 }));
+      delete b.seen; delete b.list;
+    }
+    return { ...base, target: vocablist.WORDS.length, learned, basic: Object.values(bands).reduce((a, b) => a + b.basic, 0), effective: Math.round(effective), mastery: Math.min(1, mastery), bands, freqFromBank: vl.fromBank, freqPapers: vl.papers };
   }
 
   /** 某一时刻的全部分数（history=true 时只要总分）。 */
@@ -167,16 +197,13 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
           for (const l of ch.leaves) {
             let view;
             if (l.kind === "vocab") {
-              // 分值＝这一档的词数 / 目标词汇量 × 15；得分＝分值 × 这一档的平均记忆率（四档合计＝15 × 有效词汇 / 目标）
+              // 分值＝15 × 这一档的权重占比（固定）；得分＝分值 × 这一档的掌握度
               const vmax = mod.max;
-              const tgt = Math.max(1, v.target || target);
-              let pts = 0, m = 0, n = 0, band = null;
-              if (v.bands) {
-                if (l.band === "new") { n = Math.max(0, tgt - (v.learned || 0)); pts = (vmax * n) / Math.max(tgt, v.learned || 0); m = 0; }
-                else { band = v.bands[l.band] || { n: 0, sumR: 0, samples: [] }; n = band.n; pts = (vmax * n) / Math.max(tgt, v.learned || 0); m = n ? band.sumR / n : 0; }
-              } else if (l.band === "easy") { pts = vmax; m = v.mastery; }
+              let pts = 0, m = 0, band = null;
+              if (v.bands?.[l.band]) { band = v.bands[l.band]; pts = vmax * band.share; m = band.m; }
+              else if (l.band === "core") { pts = vmax; m = v.mastery; } // 只有总掌握度时（历史曲线）全部算在第一颗
               const sc = pts * m;
-              view = { id: l.id, name: l.name, band: l.band, points: r2(pts), score: r2(sc), m: r2(m), now: r2(m), R: r2(m), vocab: { ...v, bands: undefined }, words: band?.samples || [], due: l.band === "hard" && n > 0, n };
+              view = { id: l.id, name: l.name, band: l.band, points: r2(pts), score: r2(sc), m: r2(m), now: r2(m), R: r2(m), vocab: { ...v, bands: undefined }, size: band?.size || 0, learnedN: band?.learned || 0, desc: band?.desc || "", basicN: band?.basic || 0, words: band?.weakest || [], todo: band?.todo || [], due: false, n: band?.learned || 0 };
               varSum += (pts * 0.05) ** 2;
             } else {
               const st = replay(byLeaf.get(l.id) || [], at, l.points);
@@ -269,8 +296,11 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
     const newPerDay = words.filter((w) => w.first && now - Date.parse(w.first) <= 28 * DAY).length / 28;
     const v = cur.vocab;
     const avgR = v.learned ? v.effective / v.learned : 0.9;
-    const vocabProjM = Math.min(1, ((v.learned || 0) + newPerDay * daysLeft) * (avgR || 0.9) / target);
-    const vocabIdleM = v.learned ? Math.min(1, v.effective * 0.7 / target) : 0;
+    // 词汇预测：按墨墨最近的新学速度，把还没背的词逐渐补上（按当前平均记忆率），掌握度按同样的比例往上走
+    const vt = v.target || target;
+    const remain = Math.max(0, vt - (v.learned || 0) - (v.basic || 0));
+    const vocabProjM = Math.min(1, v.mastery + (remain ? Math.min(1, (newPerDay * daysLeft) / remain) : 0) * (1 - v.mastery) * (avgR || 0.9));
+    const vocabIdleM = Math.min(1, v.mastery * 0.85);
     const projected = restProj + cur.vocabMax * Math.max(vocabProjM, v.mastery * 0.9);
     const idleTotal = idleRest + cur.vocabMax * vocabIdleM;
     const dataDays = Math.max(1, (now - first) / DAY);

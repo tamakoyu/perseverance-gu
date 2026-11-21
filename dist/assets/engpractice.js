@@ -562,7 +562,7 @@ export function mountEnglishPractice(ctx, host, signal, { onLeave } = {}) {
     // 生词
     if (rv.vocab?.length) {
       const checks = rv.vocab.map((w) => ({ w, cb: el("input", { type: "checkbox", checked: true }) }));
-      const vbox = el("div", "ky-eng-vocab", el("div", "ky-label", "这组的重点词（勾选后加入生词本）"),
+      const vbox = el("div", "ky-eng-vocab", el("div", "ky-label", "这组的重点词（勾选后加入生词本，并推送到墨墨背）"),
         el("div", "ky-eng-words", ...checks.map(({ w, cb }) => el("label", "ky-eng-word", cb,
           el("span", null, el("b", null, w.word), ` ${w.phonetic || ""} ${w.pos || ""} ${w.meaning || ""}`),
           w.sentence ? el("div", "ky-muted ky-eng-wsent", w.sentence) : null))));
@@ -570,7 +570,7 @@ export function mountEnglishPractice(ctx, host, signal, { onLeave } = {}) {
         const words = checks.filter((c) => c.cb.checked).map((c) => c.w);
         if (!words.length) return;
         addBtn.disabled = true;
-        try { const r = await ctx.call("vocab.addMany", { words, source: `${rv.paper || ""} ${partLabel(rv.part)}` }); toast(root, `已加入 ${r.added} 个（已有的补了例句）`); addBtn.textContent = "已加入"; }
+        try { const r = await ctx.call("vocab.addMany", { words, source: `${rv.paper || ""} ${partLabel(rv.part)}` }); toast(root, `已加入 ${r.added} 个（已有的补了例句），正在推送到墨墨`); addBtn.textContent = "已加入"; }
         catch (err) { toast(root, err.message, "error"); addBtn.disabled = false; }
       }, "ky-btn ky-btn-primary");
       put(vbox, el("div", "ky-row", addBtn));

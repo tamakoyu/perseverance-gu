@@ -1,7 +1,7 @@
 "use strict";
 // 墨墨背单词开放 API：拉取学习记录，估算每个词现在还记得的概率。
 // 文档 https://open.maimemo.com/document（学习数据接口为公测，需要在 App 里开启自动同步）。
-const { nowIso } = require("./util.cjs");
+const { nowIso, fail } = require("./util.cjs");
 
 const BASE = "https://open.maimemo.com/open/api/v1/memo/study";
 const DAY = 86400000;
@@ -124,7 +124,34 @@ function createMomo({ store, getToken }) {
     };
   }
 
-  return { sync, vocabState, cache, retention };
+  /**
+   * 把生词加进墨墨的学习计划：先按拼写查出单词 ID，再调「添加单词」。
+   * 返回每个词的结果：exists＝墨墨里本来就在背；added＝已提交加入；notfound＝墨墨词库里查不到（多半是词组）。
+   */
+  async function pushWords(spellings, signal) {
+    const token = getToken();
+    if (!token) fail("还没填墨墨 token：在 设置 → 考研工具箱 里填写");
+    const want = [...new Set(spellings.map((x) => String(x || "").trim()).filter(Boolean))];
+    const result = {};
+    const have = new Set((cache().words || []).map((w) => String(w.s || "").toLowerCase()));
+    const ask = [];
+    for (const w of want) { if (have.has(w.toLowerCase())) result[w] = "exists"; else ask.push(w); }
+    const idOf = new Map();
+    for (let i = 0; i < ask.length; i += 500) {
+      const r = await call(token, "../vocabulary/query", { spellings: ask.slice(i, i + 500) }, signal);
+      for (const v of r.voc || []) idOf.set(String(v.spelling).toLowerCase(), v.id);
+    }
+    const ids = [];
+    for (const w of ask) { const id = idOf.get(w.toLowerCase()); if (id) { ids.push(id); result[w] = "added"; } else result[w] = "notfound"; }
+    let added = 0;
+    for (let i = 0; i < ids.length; i += 1000) {
+      const r = await call(token, "add_words", { words: ids.slice(i, i + 1000).map((id) => ({ id })), advance: false }, signal);
+      added += r.added_count || 0;
+    }
+    return { result, sent: ids.length, added };
+  }
+
+  return { sync, vocabState, cache, retention, pushWords };
 }
 
 module.exports = { createMomo, retention };

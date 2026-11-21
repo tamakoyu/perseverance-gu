@@ -12,12 +12,12 @@ const MODULE_MAX = {
 // 英语一：在阅读、完形、翻译、新题型里划出 15 分作为「词汇」（单词量决定这几部分的上限），总分仍是 100。
 const ENGLISH = {
   key: "英语", name: "英语一", max: 100, modules: [
-    // 词汇按「对你来说的难度」分四档：分值按每档词数占目标词汇量的比例动态计算，四档合计 15 分
+    // 词汇：考研词表里的词按历年真题出现次数固定分四档（见 vocablist.cjs），越高频分值越高，四档合计 15 分
     { name: "词汇", max: 15, chapters: [{ name: "词汇量", leaves: [
-      { name: "牢固词", kind: "vocab", band: "easy" },
-      { name: "巩固中", kind: "vocab", band: "mid" },
-      { name: "易忘词", kind: "vocab", band: "hard" },
-      { name: "待学词", kind: "vocab", band: "new" },
+      { name: "核心高频词", kind: "vocab", band: "core" },
+      { name: "常考词", kind: "vocab", band: "common" },
+      { name: "偶见词", kind: "vocab", band: "rare" },
+      { name: "大纲其余词", kind: "vocab", band: "other" },
     ] }] },
     { name: "完形填空", max: 7, chapters: [{ name: "完形填空", leaves: [
       { name: "词义辨析", match: { part: "完形", topic: "词义辨析" }, share: 225 },

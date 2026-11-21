@@ -81,7 +81,6 @@ export function activate(ctx) {
       const study = el("input", { type: "checkbox", checked: s.studyMode });
       const ask = el("input", { type: "checkbox", checked: s.autoExportPrompt });
       const momo = el("input", { class: "ky-input", type: "password", value: "", placeholder: s.momoTokenSet ? `${s.momoTokenHint}，留空不修改` : "墨墨开放 API token（墨墨 App → 我的 → 更多设置 → 实验功能 → 开放 API）", autocomplete: "off" });
-      const vocabTarget = el("input", { class: "ky-input", type: "number", min: 1000, max: 20000, step: 100, value: s.vocabTarget || 5500 });
       const momoOut = el("div");
       const out = el("div");
       const picks = el("div", "ky-row");
@@ -134,13 +133,12 @@ export function activate(ctx) {
           try { const r = await ctx.call("momo.test", { token: momo.value }); reset(momoOut, el("div", "ky-ok", `✓ 连上了：${r.count} 个词有学习记录`)); }
           catch (err) { reset(momoOut, errorBox(err)); }
         }, "ky-btn ky-btn-ghost")), momoOut,
-        field("目标词汇量", vocabTarget, "词汇分 = 已学单词的记忆总量 ÷ 目标词汇量；考研大纲约 5500 词"),
         el("label", "ky-check", study, " 启用学习模式（会话首句以【学习】开头时生效；改动后需重启 LearnHarness）"),
         el("label", "ky-check", ask, " 学习模式讲完后询问是否导出到 Obsidian"),
         el("div", "ky-row",
           btn("保存", async () => {
             try {
-              await ctx.call("settings.save", { vaultPath: vault.value, papersPath: papers.value, examDate: exam.value, studyMode: study.checked, autoExportPrompt: ask.checked, vocabTarget: Number(vocabTarget.value) || 5500, ...(momo.value.trim() ? { momoToken: momo.value.trim() } : {}) });
+              await ctx.call("settings.save", { vaultPath: vault.value, papersPath: papers.value, examDate: exam.value, studyMode: study.checked, autoExportPrompt: ask.checked, ...(momo.value.trim() ? { momoToken: momo.value.trim() } : {}) });
               toast(root, "已保存");
               testConn();
             } catch (err) { toast(root, err.message, "error"); }

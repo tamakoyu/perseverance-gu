@@ -875,3 +875,12 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .sk-words { display: flex; flex-wrap: wrap; gap: 6px; }
 .sk-word { display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 9px; border-radius: 8px; font-size: 12px; letter-spacing: .02em; font-family: "SF Pro Text", "Helvetica Neue", sans-serif; color: rgba(255,255,255,calc(.45 + var(--r) * .55)); background: rgba(255,255,255,calc(.03 + var(--r) * .07)); border: 1px solid rgba(255,255,255,calc(.06 + var(--r) * .14)); }
 .sk-word small { font-size: 9.5px; color: var(--faint); }
+.sk-word-todo { color: var(--faint); border-style: dashed; }
+/* 生词本（推送到墨墨） */
+.ky-vocab-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.ky-vocab-row:last-child { border-bottom: 0; }
+.ky-vocab-main { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; min-width: 0; }
+.ky-vocab-sent { flex-basis: 100%; font-size: .85em; opacity: .7; line-height: 1.5; }
+.ky-tag-ok { color: #2f9e68; border-color: color-mix(in srgb, #2f9e68 40%, transparent); }
+.ky-tag-warn { color: #c07a1f; border-color: color-mix(in srgb, #c07a1f 40%, transparent); }
+.ky-tag-muted { opacity: .6; }

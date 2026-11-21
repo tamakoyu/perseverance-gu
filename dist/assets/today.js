@@ -16,7 +16,7 @@ export function mountToday(ctx, container, signal) {
     if (signal.aborted) return;
     const sc = await scoreP;
     if (signal.aborted) return;
-    reset(root, header(d), scoreBlock(sc), planBlock(d), dueRow(d), timeBlock(d), tipBlock());
+    reset(root, header(d), scoreBlock(sc), planBlock(d), dueRow(d, sc), timeBlock(d), tipBlock());
   }
 
   // 分数判断机：预测分、今天该复习的考点、墨墨今天的单词、还没结算的会话
@@ -90,7 +90,8 @@ export function mountToday(ctx, container, signal) {
         el("div", "ky-stages", ...d.stages.map((s) => el("span", { class: `ky-stage${s.name === d.stage.name ? " ky-on" : ""}` }, s.name)))));
   }
 
-  function dueRow(d) {
+  function dueRow(d, sc) {
+    const v = sc?.vocab || {};
     const card = (title, n, total, action, label) => el("div", "ky-stat",
       el("div", "ky-stat-n", String(n)),
       el("div", "ky-stat-t", title),
@@ -98,7 +99,12 @@ export function mountToday(ctx, container, signal) {
       n ? btn(label, action, "ky-btn ky-btn-primary") : el("div", "ky-muted", "今天没有到期"));
     return el("div", "ky-stats",
       card("到期错题", d.due.mistakes, d.due.mistakesTotal, () => ctx.app.openView("mistakes"), "开始重做"),
-      card("到期生词", d.due.vocab, d.due.vocabTotal, () => ctx.app.openView("english"), "开始复习"),
+      // 生词都在墨墨里背：这里只显示墨墨今天的进度
+      el("div", "ky-stat",
+        el("div", "ky-stat-n", v.progress ? `${v.progress.finished}/${v.progress.total}` : v.at ? String(v.due ?? 0) : "—"),
+        el("div", "ky-stat-t", "墨墨今日单词"),
+        el("div", "ky-muted", v.progress ? "已背 / 今天要背" : v.at ? "今天要背 / 复习" : "填墨墨 token 后显示"),
+        el("div", "ky-muted", "生词会自动推送到墨墨")),
       el("div", "ky-stat",
         el("div", "ky-stat-n", "🃏"),
         el("div", "ky-stat-t", "记忆卡"),

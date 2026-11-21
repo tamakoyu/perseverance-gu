@@ -1,6 +1,6 @@
-// 英语专项：真题刷题（总览 / 选题 / 限时 / AI 复盘）、生词本（FSRS）、长难句拆解、作文批改。
+// 英语专项：真题刷题（总览 / 选题 / 限时 / AI 复盘）、生词本（推送到墨墨背）、长难句拆解、作文批改。
 import { mountEnglishPractice } from "./engpractice.js";
-import { put, reset, el, btn, select, field, md, errorBox, toast, runJob, tabs, photoPicker, fmtTime, RATINGS } from "./ui.js";
+import { put, reset, el, btn, select, field, md, errorBox, toast, runJob, tabs, photoPicker, fmtTime } from "./ui.js";
 
 export function mountEnglish(ctx, container, signal) {
   const root = el("div", "ky-root");
@@ -18,59 +18,60 @@ export function mountEnglish(ctx, container, signal) {
     else renderEssay();
   }
 
-  // ── 生词本 ───────────────────────────────────────────
+  // ── 生词本：只做记录，单词都推送到墨墨里背 ───────────────────
+  const MOMO_LABEL = { added: ["已加入墨墨", "ky-tag-ok"], exists: ["墨墨里已在背", "ky-tag-ok"], notfound: ["墨墨词库查不到", "ky-tag-warn"], error: ["推送失败", "ky-tag-warn"] };
   async function renderVocab() {
     let words = [];
-    try { words = await ctx.call("vocab.list"); } catch (err) { put(body, errorBox(err)); return; }
-    const due = words.filter((w) => Date.parse(w.card?.due) <= Date.now());
+    let s = {};
+    try { [words, s] = await Promise.all([ctx.call("vocab.list"), ctx.call("settings.get").then((r) => r.settings)]); } catch (err) { put(body, errorBox(err)); return; }
+    const hasToken = !!s.momoTokenSet;
+    const pending = words.filter((w) => !w.momo || w.momo.status === "error");
     const word = el("input", { class: "ky-input", placeholder: "单词 / 词组" });
     const sentence = el("textarea", { class: "ky-input", placeholder: "原句（精读时遇到它的那句话）" });
     const src = el("input", { class: "ky-input", placeholder: "出处，如：2014 Text 1" });
     const msg = el("div");
-    const review = el("section", "ky-card ky-vocab-review", el("h3", "ky-h3", `今日复习（${due.length}）`));
-    put(body, review);
-    const next = (list) => {
-      if (!list.length) { put(review, el("p", "ky-empty", "今天的生词都复习完了")); return; }
-      const w = list[0];
-      const started = Date.now();
-      const ctxSent = w.contexts?.[w.contexts.length - 1];
-      const back = el("div", "ky-hidden",
-        el("div", "ky-word-meaning", `${w.phonetic || ""} ${w.pos || ""} ${w.meaning}`),
-        w.otherMeanings ? el("div", "ky-muted", `其他义：${w.otherMeanings}`) : null,
-        w.collocations ? el("div", "ky-muted", `搭配：${w.collocations}`) : null,
-        ctxSent?.translation ? el("div", "ky-muted", `译：${ctxSent.translation}`) : null,
-        el("div", "ky-row", ...RATINGS.map(([r, label, cls]) => btn(label, async () => {
-          await ctx.call("vocab.rate", { id: w.id, rating: r });
-          await ctx.call("activity.log", { subject: "英语", minutes: Math.max(0, Math.round((Date.now() - started) / 60000)), kind: "vocab" }).catch(() => {});
-          card.remove();
-          next(list.slice(1));
-        }, `ky-btn ${cls}`))));
-      const card = el("div", "ky-flash",
-        el("div", "ky-word", w.word),
-        ctxSent?.sentence ? el("div", "ky-sentence", ctxSent.sentence) : null,
-        btn("想好了，看释义", (e) => { back.classList.remove("ky-hidden"); e.target.remove(); }, "ky-btn ky-btn-primary"),
-        back,
-        el("div", "ky-muted", `还剩 ${list.length}`));
-      put(review, card);
-    };
-    next(due);
+    const pushOut = el("div");
+
+    put(body, el("section", "ky-card",
+      el("h3", "ky-h3", "生词都在墨墨里背"),
+      el("p", "ky-muted", hasToken
+        ? "加进生词本的词会自动推送到墨墨的学习计划（真题复盘挑的词、阅读时划的词、手动添加的都算），之后打开墨墨背就行；这里只留释义和原句做记录。"
+        : "还没填墨墨 token：在 设置 → 考研工具箱 里填好后，生词会自动推送到墨墨。"),
+      hasToken && pending.length ? el("div", "ky-row",
+        btn(`把还没推送的 ${pending.length} 个词加到墨墨`, async () => {
+          try {
+            const r = await runJob(ctx, pushOut, () => ctx.call("vocab.pushMomo"), "推送到墨墨");
+            reset(pushOut, el("div", "ky-ok", `完成：新加入 ${r.added} 个，墨墨里本来就在背 ${r.exists} 个${r.notfound ? `，墨墨词库查不到 ${r.notfound} 个` : ""}。`));
+            setTimeout(render, 1500);
+          } catch (err) { reset(pushOut, errorBox(err)); }
+        }, "ky-btn ky-btn-primary")) : null,
+      pushOut));
 
     put(body, el("section", "ky-card", el("h3", "ky-h3", "添加生词"),
       el("div", "ky-grid2", field("单词", word), field("出处", src)), field("原句", sentence),
-      btn("添加（AI 补全释义）", async () => {
+      btn(hasToken ? "添加并推送到墨墨" : "添加（AI 补全释义）", async () => {
         if (!word.value.trim()) return;
         reset(msg, el("span", "ky-muted", "查询中…"));
         try {
           const r = await ctx.call("vocab.add", { word: word.value, sentence: sentence.value, source: src.value });
-          reset(msg, el("div", "ky-ok", `${r.merged ? "已在生词本，补充了新例句" : "已添加"}：${r.item.word} ${r.item.phonetic} ${r.item.meaning}`));
+          reset(msg, el("div", "ky-ok", `${r.merged ? "已在生词本，补充了新例句" : "已添加"}：${r.item.word} ${r.item.phonetic} ${r.item.meaning}${hasToken ? "，正在推送到墨墨" : ""}`));
           word.value = ""; sentence.value = "";
+          setTimeout(render, 2500);
         } catch (err) { reset(msg, errorBox(err)); }
       }, "ky-btn ky-btn-primary"), msg));
 
-    const all = el("details", "ky-card", el("summary", "ky-sum", el("b", null, `全部生词（${words.length}）`)));
-    put(all, ...words.slice().reverse().map((w) => el("div", "ky-meta-row", el("b", null, w.word), el("span", null, w.meaning), el("span", "ky-muted", `下次 ${fmtTime(w.card?.due)}`),
-      btn("删除", async () => { await ctx.call("vocab.delete", { id: w.id }); render(); }, "ky-btn ky-btn-ghost ky-btn-sm"))));
-    put(body, all);
+    const list = el("section", "ky-card", el("h3", "ky-h3", `全部生词（${words.length}）`));
+    put(list, ...words.slice().reverse().map((w) => {
+      const [label, cls] = w.momo ? MOMO_LABEL[w.momo.status] || ["", ""] : ["未推送", "ky-tag-muted"];
+      const ctxSent = w.contexts?.[w.contexts.length - 1];
+      return el("div", "ky-vocab-row",
+        el("div", "ky-vocab-main", el("b", null, w.word), el("span", "ky-muted", `${w.phonetic || ""} ${w.pos || ""}`), el("span", null, w.meaning),
+          ctxSent?.sentence ? el("div", "ky-vocab-sent", ctxSent.sentence, ctxSent.source ? el("span", "ky-muted", ` — ${ctxSent.source}`) : null) : null),
+        el("span", { class: `ky-tag ${cls}`, title: w.momo?.error || undefined }, label),
+        btn("删除", async () => { await ctx.call("vocab.delete", { id: w.id }); render(); }, "ky-btn ky-btn-ghost ky-btn-sm"));
+    }));
+    if (!words.length) put(list, el("p", "ky-empty", "还没有生词。在真题复盘、阅读划词或上面手动添加。"));
+    put(body, list);
   }
 
   // ── 长难句 ───────────────────────────────────────────

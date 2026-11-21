@@ -702,7 +702,7 @@ export function mountScore(ctx, container, signal) {
   }
   function closePanel() { root.classList.remove("sk-panel-on"); redo = null; }
   function state(l) {
-    if (l.vocab) return [{ easy: "牢固", mid: "巩固中", hard: "易忘", new: "待学" }[l.band] || "词汇", l.band === "hard" ? "sk-st-due" : l.band === "easy" ? "sk-st-good" : l.band === "new" ? "sk-st-off" : "sk-st-mid"];
+    if (l.vocab) return [`掌握 ${pct(l.m)}`, l.m >= 0.8 ? "sk-st-good" : l.m >= 0.4 ? "sk-st-mid" : "sk-st-low"];
     if (!l.n) return ["未点亮", "sk-st-off"];
     if (l.due) return ["该复习", "sk-st-due"];
     if (l.real && l.m >= 0.75) return ["真题稳定", "sk-st-good"];
@@ -817,20 +817,22 @@ export function mountScore(ctx, container, signal) {
   function showVocab({ l, c }) {
     const v = l.vocab;
     const out = el("div");
-    const desc = { easy: "墨墨给的复习间隔已经在 30 天以上，基本记住了。", mid: "复习间隔 7–30 天，还在巩固。", hard: "复习间隔不到 7 天，或者上次忘了 / 模糊，最容易掉分。", new: "目标词汇量里还没开始背的部分。" }[l.band];
     const words = l.words || [];
+    const todo = l.todo || [];
     openPanel(
       head("英语一 · 词汇", l.name, l.score, l.points),
-      el("p", "sk-note", desc),
+      el("p", "sk-note", `${l.desc || ""} 这一档固定 ${l.size} 个词，每个词归哪一档不会变；背得越多、记得越牢，这颗星越亮。`),
       el("div", "sk-stats",
-        el("div", "sk-stat", el("span", null, "词数"), el("b", null, `${l.n}`), el("small", null, `目标 ${v.target}`)),
-        el("div", "sk-stat", el("span", null, "平均记忆"), el("b", null, l.band === "new" ? "—" : pct(l.m)), el("small", null, "按记住的概率")),
-        el("div", "sk-stat", el("span", null, "占词汇分"), el("b", null, f1(l.points)), el("small", null, "/ 15"))),
-      words.length ? el("section", "sk-sec", el("h4", "sk-h", l.band === "hard" ? "最容易忘的词" : l.band === "easy" ? "复习次数最多的词" : "记忆最弱的词"),
+        el("div", "sk-stat", el("span", null, "这一档"), el("b", null, `${l.size}`), el("small", null, "个词")),
+        el("div", "sk-stat", el("span", null, "已背"), el("b", null, `${l.learnedN}`), el("small", null, l.basicN ? `另有 ${l.basicN} 个初中词按会计` : "在墨墨里背过")),
+        el("div", "sk-stat", el("span", null, "掌握度"), el("b", null, pct(l.m)), el("small", null, "按每个词记住的概率"))),
+      words.length ? el("section", "sk-sec", el("h4", "sk-h", "背过但记得最弱的"),
         el("div", "sk-words", ...words.map((w) => el("span", { class: "sk-word", style: `--r:${w.R}` }, w.s, el("small", null, pct(w.R)))))) : null,
+      todo.length ? el("section", "sk-sec", el("h4", "sk-h", "还没背的（按真题出现次数排）"),
+        el("div", "sk-words", ...todo.map((w) => el("span", { class: "sk-word sk-word-todo", style: "--r:0" }, w.s, w.f ? el("small", null, `${w.f}次`) : null)))) : null,
       el("section", "sk-sec", el("h4", "sk-h", "整体词汇"),
         el("div", "sk-stats",
-          el("div", "sk-stat", el("span", null, "已学"), el("b", null, `${v.learned}`), el("small", null, `目标 ${v.target}`)),
+          el("div", "sk-stat", el("span", null, "已背"), el("b", null, `${v.learned}`), el("small", null, `考研词表 ${v.target} 词`)),
           el("div", "sk-stat", el("span", null, "有效词汇"), el("b", null, `${v.effective}`), el("small", null, "按记住的概率加总")),
           el("div", "sk-stat", el("span", null, "词汇分"), el("b", null, f1(c.score)), el("small", null, "/ 15")))),
       el("p", "sk-note", v.local ? "还没接墨墨：现在用的是插件自己的生词本。" : `今天墨墨要背 / 复习 ${v.due} 个词${v.progress ? `（进度 ${v.progress.finished}/${v.progress.total}）` : ""}。上次同步 ${v.at ? new Date(v.at).toLocaleString() : "—"}${v.error ? `，出错：${v.error}` : ""}。`),

@@ -856,7 +856,46 @@ exports.activate = (ctx) => {
   op("english.units", (p) => engPractice.unitInfo(Array.isArray(p.ids) ? p.ids.map((x) => str(x, 300)) : []));
   op("english.review", (p) => jobs.start("review", "AI 复盘", (j) => engPractice.review({ attemptId: str(p.attemptId, 100), ...j })));
   op("english.aiDrill", (p) => jobs.start("drill", "生成强化题", (j) => engPractice.aiDrill({ attemptId: str(p.attemptId, 100), unitId: str(p.unitId, 300), ...j })));
-  op("vocab.addMany", (p) => { const r = engPractice.addWords({ words: Array.isArray(p.words) ? p.words.slice(0, 50) : [], source: p.source }); changed("vocab"); return r; });
+  // 生词只在墨墨里背：加进生词本时自动推送到墨墨的学习计划
+  let pushing = Promise.resolve();
+  function pushToMomo(words, signal) {
+    const run = async () => {
+      const items = store.list("vocab");
+      const list = words ? items.filter((w) => words.some((x) => x.toLowerCase() === w.word.toLowerCase())) : items.filter((w) => !w.momo || w.momo.status === "error");
+      if (!list.length) return { total: 0, added: 0, exists: 0, notfound: 0 };
+      let r;
+      try { r = await momo.pushWords(list.map((w) => w.word), signal); }
+      catch (err) {
+        const all = store.list("vocab");
+        for (const w of all) if (list.some((x) => x.id === w.id)) w.momo = { status: "error", error: err.message, at: nowIso() };
+        store.saveList("vocab", all); changed("vocab");
+        throw err;
+      }
+      const all = store.list("vocab");
+      const count = { total: list.length, added: 0, exists: 0, notfound: 0 };
+      for (const w of all) {
+        const st = r.result[w.word.trim()] || r.result[Object.keys(r.result).find((k) => k.toLowerCase() === w.word.trim().toLowerCase())];
+        if (!st || !list.some((x) => x.id === w.id)) continue;
+        w.momo = { status: st, at: nowIso() };
+        count[st]++;
+      }
+      store.saveList("vocab", all);
+      changed("vocab");
+      return { ...count, confirmed: r.added };
+    };
+    const p = pushing.then(run, run);
+    pushing = p.catch(() => {});
+    return p;
+  }
+  const autoPush = (words) => { if (String(settings().momoToken || "").trim() && words.length) pushToMomo(words).catch(() => {}); };
+  op("vocab.addMany", (p) => {
+    const words = Array.isArray(p.words) ? p.words.slice(0, 50) : [];
+    const r = engPractice.addWords({ words, source: p.source });
+    changed("vocab");
+    autoPush(words.map((w) => str(w.word, 100).trim()).filter(Boolean));
+    return r;
+  });
+  op("vocab.pushMomo", () => jobs.start("momopush", "推送生词到墨墨", ({ signal }) => pushToMomo(null, signal)));
   op("attempt.get", (p) => {
     const a = store.list("attempts").find((x) => x.id === str(p.id, 100));
     if (!a) fail("找不到这次练习");
@@ -874,8 +913,7 @@ exports.activate = (ctx) => {
   op("pad.drop", (p) => pads.drop(str(p.id, 100), str(p.qid, 100)));
 
   op("vocab.list", () => store.list("vocab"));
-  op("vocab.add", (p) => english.addWord(p));
-  op("vocab.rate", (p) => english.rateWord(p));
+  op("vocab.add", async (p) => { const r = await english.addWord(p); changed("vocab"); autoPush([r.item.word]); return r; });
   op("vocab.delete", (p) => { store.remove("vocab", p.id); return { ok: true }; });
   op("sentence.grade", (p) => jobs.start("sentence", "批改长难句", () => english.gradeSentence(p)));
   op("sentence.list", () => store.list("sentences").slice().reverse());
