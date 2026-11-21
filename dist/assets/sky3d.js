@@ -29,7 +29,9 @@ const pct = (x) => `${Math.round((x || 0) * 100)}%`;
 const reduceMotion = () => { try { return matchMedia("(prefers-reduced-motion: reduce)").matches; } catch { return false; } };
 const jget = (k) => { try { return JSON.parse(localStorage.getItem(k)) || null; } catch { return null; } };
 const jset = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 忽略 */ } };
-const daysAgo = (iso) => (iso ? Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 86400000)) : null);
+// 按本地日历日期算「今天 / 昨天 / N 天前」，不是按过了几个 24 小时
+const dayStart = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+const daysAgo = (iso) => (iso ? Math.max(0, Math.round((dayStart(Date.now()) - dayStart(Date.parse(iso))) / 86400000)) : null);
 const ago = (iso) => { const d = daysAgo(iso); return d == null ? "还没学过" : d === 0 ? "今天" : d === 1 ? "昨天" : `${d} 天前`; };
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const starRadius = (points) => 1.1 + 1.25 * Math.sqrt(points);
@@ -332,16 +334,23 @@ export function mountScore(ctx, container, signal) {
     setTimeout(() => {
       if (signal.aborted) return;
       const dist = camera.position.distanceTo(st.pos);
-      const away = st.pos.clone().sub(camera.position).normalize();
-      const lateral = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.6, Math.random() - 0.5).normalize();
-      const from = st.pos.clone().addScaledVector(away, dist * (0.9 + Math.random() * 0.6)).addScaledVector(lateral, dist * 0.6);
-      const ctrl = from.clone().lerp(st.pos, 0.5).addScaledVector(lateral, -dist * 0.35).add(V(0, dist * 0.15, 0));
-      const color = SILVER.clone().lerp(new THREE.Color(1, 1, 1), 0.4);
-      meteors.push(new Meteor(scene, { from, to: st.pos, ctrl, duration: 1.5 + Math.random() * 0.5, color, width: Math.max(0.6, dist * 0.002), pool: sparks,
+      // 从画面的侧上方斜着划进来（屏幕上能看到一整条轨迹），先慢后快地撞进那颗星
+      const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+      const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
+      const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const span = dist * Math.tan((camera.fov * Math.PI) / 360); // 这个深度上半个画面的高度
+      const from = st.pos.clone()
+        .addScaledVector(right, side * span * (1.1 + Math.random() * 0.5) * camera.aspect)
+        .addScaledVector(up, span * (0.9 + Math.random() * 0.5))
+        .addScaledVector(fwd, -dist * 0.15);
+      const ctrl = from.clone().lerp(st.pos, 0.45).addScaledVector(up, span * 0.35);
+      const color = SILVER.clone().lerp(new THREE.Color(1, 1, 1), 0.5);
+      meteors.push(new Meteor(scene, { from, to: st.pos, ctrl, duration: 1.7 + Math.random() * 0.5, color, width: Math.max(0.6, dist * 0.0032), pool: sparks,
         onHit: () => {
-          if (st.obj) { st.obj.flash = 1; st.obj.setLook(look); }
-          shocks.push(new Shock(scene, st.pos, color, Math.max(10, dist * 0.09)));
-          sparks.burst(st.pos, color, 70, Math.max(6, dist * 0.06), Math.max(1.2, dist * 0.004));
+          if (st.obj) { st.obj.flash = 1.2; st.obj.setLook(look); }
+          shocks.push(new Shock(scene, st.pos, color, Math.max(12, dist * 0.13)));
+          sparks.burst(st.pos, color, 90, Math.max(6, dist * 0.07), Math.max(1.4, dist * 0.005));
         } }));
     }, delay);
   }
@@ -998,7 +1007,7 @@ export function mountScore(ctx, container, signal) {
     for (const s of data.subjects) for (const m of s.modules) for (const c of m.chapters) for (const l of c.leaves) for (const e of l.evidence || []) ev.push({ ...e, leaf: l });
     ev.sort((a, b) => (a.at < b.at ? 1 : -1));
     const grouped = [];
-    for (const e of ev) { const pv = grouped[grouped.length - 1]; if (pv && pv.leaf.id === e.leaf.id && pv.at.slice(0, 10) === e.at.slice(0, 10) && pv.kind === e.kind) { pv.delta += e.delta; pv.count++; } else grouped.push({ ...e, count: 1 }); }
+    for (const e of ev) { const pv = grouped[grouped.length - 1]; if (pv && pv.leaf.id === e.leaf.id && dayStart(pv.at) === dayStart(e.at) && pv.kind === e.kind) { pv.delta += e.delta; pv.count++; } else grouped.push({ ...e, count: 1 }); }
     const recent = grouped.filter((e) => Math.abs(e.delta) >= 0.05).slice(0, 5);
     reset(feed, recent.length ? el("div", "sk-feed-h", el("i"), `最近 ${recent.length} 次变化`) : null,
       el("div", "sk-feed-list", ...recent.map((e) => el("button", { type: "button", class: "sk-feed-row", onclick: () => { const st = starOf(e.leaf.id); if (st) { nav.subject = st.subject; nav.chapter = st.chapter; go(3, { star: st }); } } },
@@ -1037,9 +1046,9 @@ export function mountScore(ctx, container, signal) {
         const was = st.id in targets ? targets[st.id] : seen?.leaves?.[st.id];
         if (first) {
           st.delay = st.pos.length() / 420 + Math.random() * 0.4;
-          if (was != null && target > was + 0.004 && !reduceMotion()) { st.obj.setLook(lookOf({ ...l, now: was, m: was, due: false }), true); gainMeteor(st, look, 3200 + delay); delay += 260; }
+          if (was != null && target > was + 0.004 && !reduceMotion()) { st.obj.setLook(lookOf({ ...l, now: was, m: was, due: false }), true); gainMeteor(st, look, 4000 + delay); delay += 320; }
           else st.obj.setLook(look, true);
-        } else if (was != null && target > was + 0.004 && !reduceMotion() && !preview) { gainMeteor(st, look, delay); delay += 220; }
+        } else if (was != null && target > was + 0.004 && !reduceMotion() && !preview) { gainMeteor(st, look, delay); delay += 320; }
         else if (!preview) st.obj.setLook(look);
       }
       targets = Object.fromEntries(L.stars.map((s) => [s.id, s.leaf.now ?? 0]));
