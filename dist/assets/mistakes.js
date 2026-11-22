@@ -36,13 +36,30 @@ export function mountMistakes(ctx, container, signal) {
     else renderAdd();
   }
 
-  function questionBlock(m) {
+  function questionBlock(m, pick) {
     return el("div", "ky-q",
       el("div", "ky-meta-row", el("span", "ky-tag", m.subject), el("span", "ky-tag", m.errorType), el("b", null, m.topic), el("span", "ky-muted", m.source)),
       md(ctx, m.question, signal),
-      optionsBlock(ctx, m.options, signal),
+      pick && m.options?.length ? choiceBlock(m, pick) : optionsBlock(ctx, m.options, signal),
       m.images?.length ? storedImages(ctx, m.images) : null);
   }
+
+  // 选择题重做：可以直接点选项（单选；再点一次取消）
+  function choiceBlock(m, pick) {
+    const opts = el("div", "ky-options");
+    for (const o of m.options) {
+      const input = el("input", { type: "radio", name: `redo-${m.id}`, value: o.key });
+      input.addEventListener("click", () => {
+        if (pick.get() === o.key) { input.checked = false; pick.set(""); } else pick.set(o.key);
+      });
+      put(opts, el("label", "ky-option", input, el("span", "ky-opt-key", o.key), md(ctx, stripKey(o.text), signal, "ky-md ky-inline")));
+    }
+    return opts;
+  }
+
+  // 错因 / 作答里也有 LaTeX，统一按 Markdown 渲染
+  const reasonBlock = (m) => md(ctx, `**${m.errorType || "其他"}**：${m.diagnosis || "—"}`, signal);
+  const answerBlock = (label, text) => (text ? el("div", "ky-muted", el("span", null, `${label}：`), md(ctx, text, signal, "ky-md ky-inline")) : null);
 
   // ── 今日重做 ─────────────────────────────────────────
   function renderDue() {
@@ -54,12 +71,16 @@ export function mountMistakes(ctx, container, signal) {
     const qid = `${m.id}:${m.history?.length || 0}`;
     put(body, el("div", "ky-row", el("span", "ky-muted", `还剩 ${list.length} 道`), board.button));
     const card = el("section", "ky-card");
-    const answer = el("textarea", { class: "ky-input ky-ta", placeholder: "重新做一遍，写下答案或关键步骤；也可以在下面的画板 / 新窗口白板手写，或拍照" });
+    const isChoice = !!m.options?.length;
+    let chosen = "";
+    const pick = { get: () => chosen, set: (k) => { chosen = k; } };
+    const answer = el("textarea", { class: "ky-input ky-ta", placeholder: isChoice ? "点上面的选项作答；想写理由或草稿也可以写在这里" : "重新做一遍，写下答案或关键步骤；也可以在下面的画板 / 新窗口白板手写，或拍照" });
+    const answerText = () => [chosen ? `选 ${chosen}` : "", answer.value.trim()].filter(Boolean).join("\n");
     const pad = inkPad({ height: 420, label: "手写作答（判分时一起提交）" });
     const photos = photoPicker("拍照作答");
     const reveal = el("div");
     const actions = el("div", "ky-row");
-    put(card, questionBlock(m), field("这次的作答", answer), board.slot(qid), pad.node, photos.node, actions, reveal);
+    put(card, questionBlock(m, isChoice ? pick : null), field(isChoice ? "补充说明（可不填）" : "这次的作答", answer), board.slot(qid), pad.node, photos.node, actions, reveal);
     put(body, card);
     board.focus({
       qid,
@@ -78,12 +99,12 @@ export function mountMistakes(ctx, container, signal) {
         feedback ? md(ctx, feedback.feedback, signal) : null,
         feedback?.transcript ? el("details", "ky-material", el("summary", null, "手写识别结果"), md(ctx, feedback.transcript, signal)) : null,
         el("h4", "ky-h4", "正确答案"), md(ctx, m.correctAnswer || "（未记录）", signal),
-        el("h4", "ky-h4", "上次的错因"), el("p", null, `${m.errorType}：${m.diagnosis || "—"}`),
-        m.learnerAnswer ? el("p", "ky-muted", `上次的作答：${m.learnerAnswer}`) : null,
+        el("h4", "ky-h4", "上次的错因"), reasonBlock(m),
+        answerBlock("上次的作答", m.learnerAnswer),
         el("h4", "ky-h4", "这次掌握得怎么样？"),
         el("div", "ky-row", ...RATINGS.map(([r, label, cls]) => btn(label, async () => {
           try {
-            const said = [answer.value.trim(), feedback?.transcript ? `【手写】${feedback.transcript}` : ""].filter(Boolean).join("\n");
+            const said = [answerText(), feedback?.transcript ? `【手写】${feedback.transcript}` : ""].filter(Boolean).join("\n");
             await ctx.call("mistakes.rate", { id: m.id, rating: r, correct: feedback ? !!feedback.correct : r > 1, answer: said, feedback: feedback?.feedback || "" });
             board.forget(qid);
             await ctx.call("activity.log", { subject: m.subject, minutes: Math.round((Date.now() - started) / 60000), kind: "redo" });
@@ -94,9 +115,9 @@ export function mountMistakes(ctx, container, signal) {
     put(actions, 
       btn("AI 判分", async () => {
         const imgs = handwriting();
-        if (!answer.value.trim() && !imgs.length) { toast(root, "先写下作答、手写或拍照"); return; }
+        if (!answerText() && !imgs.length) { toast(root, isChoice ? "先选一个选项" : "先写下作答、手写或拍照"); return; }
         try {
-          const res = await runJob(ctx, reveal, () => ctx.call("mistakes.check", { id: m.id, answer: answer.value, images: imgs }), "判分");
+          const res = await runJob(ctx, reveal, () => ctx.call("mistakes.check", { id: m.id, answer: answerText(), images: imgs }), "判分");
           showAnswer(res);
         } catch (err) { reset(reveal, errorBox(err)); }
       }, "ky-btn ky-btn-primary"),
@@ -130,8 +151,8 @@ export function mountMistakes(ctx, container, signal) {
         det.dataset.filled = "1";
         put(det, questionBlock(m),
           el("h4", "ky-h4", "正确答案"), md(ctx, m.correctAnswer || "（未记录）", signal),
-          el("h4", "ky-h4", "诊断"), el("p", null, m.diagnosis || "—"),
-          m.learnerAnswer ? el("p", "ky-muted", `当时作答：${m.learnerAnswer}`) : null,
+          el("h4", "ky-h4", "诊断"), reasonBlock(m),
+          answerBlock("当时作答", m.learnerAnswer),
           el("div", "ky-row",
             m.chatId ? btn("打开来源会话", () => ctx.app.openSession(m.chatId), "ky-btn ky-btn-ghost") : null,
             btn(m.archived ? "取消归档" : "归档（已彻底掌握）", async () => { await ctx.call("mistakes.update", { id: m.id, patch: { archived: !m.archived } }); load(); }),
@@ -144,6 +165,7 @@ export function mountMistakes(ctx, container, signal) {
 
   function editDialog(m) {
     const f = {
+      options: el("textarea", { class: "ky-input ky-ta", placeholder: "选择题每行一个选项，如：A. 能，1 仍是它的周期（不是选择题就留空）" }, (m.options || []).map((o) => `${o.key}. ${stripKey(o.text)}`).join("\n")),
       topic: el("input", { class: "ky-input", value: m.topic }),
       errorType: el("input", { class: "ky-input", value: m.errorType, list: "ky-errtypes" }),
       question: el("textarea", { class: "ky-input ky-ta" }, m.question),
@@ -156,9 +178,13 @@ export function mountMistakes(ctx, container, signal) {
       content: el("div", "ky-dialog",
         el("h3", "ky-h3", "编辑错题"),
         el("datalist", { id: "ky-errtypes" }, ...errorTypes.map((t) => el("option", { value: t }))),
-        field("科目", subj), field("考点", f.topic), field("错因", f.errorType), field("题目", f.question), field("正确答案", f.correctAnswer), field("诊断", f.diagnosis),
+        field("科目", subj), field("考点", f.topic), field("错因", f.errorType), field("题目", f.question), field("选项", f.options), field("正确答案", f.correctAnswer), field("诊断", f.diagnosis),
         el("div", "ky-row", btn("保存", async () => {
-          await ctx.call("mistakes.update", { id: m.id, patch: { subject: subj.value, topic: f.topic.value, errorType: f.errorType.value, question: f.question.value, correctAnswer: f.correctAnswer.value, diagnosis: f.diagnosis.value } });
+          const options = f.options.value.split("\n").map((l) => l.trim()).filter(Boolean).map((l, i) => {
+            const k = l.match(/^\s*[(（]?([A-Ga-g])[)）.．、:：]\s*/);
+            return { key: k ? k[1].toUpperCase() : String.fromCharCode(65 + i), text: k ? l.slice(k[0].length) : l };
+          });
+          await ctx.call("mistakes.update", { id: m.id, patch: { options, subject: subj.value, topic: f.topic.value, errorType: f.errorType.value, question: f.question.value, correctAnswer: f.correctAnswer.value, diagnosis: f.diagnosis.value } });
           handle.dispose();
           load();
         }, "ky-btn ky-btn-primary"), btn("取消", () => handle.dispose()))),

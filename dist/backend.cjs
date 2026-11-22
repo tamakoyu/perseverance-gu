@@ -279,6 +279,78 @@ exports.activate = (ctx) => {
   };
 
   // ── 错题本 ─────────────────────────────────────────────
+  // 选项统一成 [{key:"A",text}]：接受 {key,text} / {value,label} / 纯字符串
+  function normOptions(list) {
+    if (!Array.isArray(list)) return [];
+    return list.slice(0, 10).map((o, i) => {
+      const raw = typeof o === "string" ? { text: o } : (o || {});
+      const k = String(raw.key ?? raw.value ?? "").trim();
+      const key = /^[A-Za-z]$/.test(k) ? k.toUpperCase() : String.fromCharCode(65 + i);
+      return { key, text: str(raw.text ?? raw.label ?? "", 2000) };
+    }).filter((o) => o.text);
+  }
+
+  // 会话里用宿主选择题工具（quiz / probe）出的题，记错题时模型常常只抄（甚至改写）题干、不抄选项：
+  // 在会话里找回原选项（字母沿用出题时的 value，和模型讲解里的「选 C」一致）。
+  // 打分 = 题干相似度 + 学习者当时选的选项文字出现在「作答」里 + 是记错题之前最近一道答错的选择题
+  function sessionOptions(chatId, question, learnerAnswer) {
+    if (!chatId || !question) return [];
+    let record = null;
+    try { record = ctx.learning.getSession(chatId); } catch { /* 会话读不到就算了 */ }
+    if (!record) return [];
+    const norm = (t) => String(t || "").replace(/\\[a-zA-Z]+|[\s$\\{}()（）"“”'‘’，。、：:；;？?！!,.\-]/g, "");
+    const grams = (t) => { const s = new Set(); for (let i = 0; i < t.length - 1; i++) s.add(t.slice(i, i + 2)); return s; };
+    const target = grams(norm(question));
+    if (target.size < 4) return [];
+    const said = norm(learnerAnswer);
+    const msgs = record.messages || [];
+    // 选择题调用 + 学习者的作答结果
+    const results = new Map();
+    for (const msg of msgs) if (msg.role === "toolResult" && msg.toolCallId) results.set(msg.toolCallId, msg.details || {});
+    let stop = msgs.length; // 旧错题：只看记这道错题那次工具调用之前的题
+    msgs.forEach((msg, i) => {
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) return;
+      if (msg.content.some((c) => c?.type === "toolCall" && c.name === "kaoyan_log_mistake" && c.arguments?.question === question)) stop = Math.min(stop, i + 1);
+    });
+    const calls = [];
+    msgs.slice(0, stop).forEach((msg) => {
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) return;
+      for (const c of msg.content) {
+        if (c?.type !== "toolCall" || !["quiz", "probe"].includes(c.name)) continue;
+        const a = c.arguments || {};
+        if (Array.isArray(a.options) && a.options.length >= 2) calls.push({ a, res: results.get(c.id) });
+      }
+    });
+    const lastWrong = [...calls].reverse().find((x) => x.res && x.res.correct === false);
+    let best = null;
+    for (const x of calls) {
+      const g = grams(norm(x.a.question));
+      if (!g.size) continue;
+      let hit = 0;
+      for (const t of target) if (g.has(t)) hit++;
+      let s = Math.max((2 * hit) / (target.size + g.size), (hit / target.size) * 0.95); // 题干常被删掉半句，也看覆盖率
+      const picked = (x.res?.answers || []).map((y) => norm(y.label)).filter((y) => y.length >= 2);
+      if (said && picked.length && picked.every((y) => said.includes(y))) s += 0.4;
+      if (x === lastWrong) s += 0.25;
+      if (s >= 0.6 && (!best || s >= best.s)) best = { s, options: x.a.options };
+    }
+    return best ? normOptions(best.options) : [];
+  }
+
+  // 旧错题补选项：每道只查一次（optionsChecked 记下来）
+  function backfillOptions() {
+    const items = store.list("mistakes");
+    let touched = 0;
+    for (const m of items) {
+      if (m.optionsChecked || m.options?.length || !m.chatId) continue;
+      const opts = sessionOptions(m.chatId, m.question, m.learnerAnswer);
+      if (opts.length) m.options = opts;
+      m.optionsChecked = true;
+      touched++;
+    }
+    if (touched) { store.saveList("mistakes", items); changed("mistakes"); }
+  }
+
   function addMistake(input) {
     const m = {
       id: uid(),
@@ -286,7 +358,8 @@ exports.activate = (ctx) => {
       topic: str(input.topic, 200) || "未分类",
       source: str(input.source, 200) || "手动录入",
       question: str(input.question, 20000),
-      options: Array.isArray(input.options) ? input.options : [],
+      options: normOptions(input.options),
+      optionsChecked: !!input.optionsChecked,
       learnerAnswer: str(input.learnerAnswer, 8000),
       correctAnswer: str(input.correctAnswer, 20000),
       errorType: str(input.errorType, 50) || "其他",
@@ -508,13 +581,24 @@ exports.activate = (ctx) => {
       tools.push({
         name: "kaoyan_log_mistake",
         label: "记录错题",
-        description: "学习者答错或答得含糊时调用：把题目、学习者回答、正确答案、错因记进错题本，之后按遗忘曲线安排重做。",
+        description: "学习者答错或答得含糊时调用：把题目、学习者回答、正确答案、错因记进错题本，之后按遗忘曲线安排重做。选择题必须把全部选项放进 options（字母和出题时一致），题干里不要写选项。",
         parameters: {
           type: "object",
           properties: {
             subject: { type: "string", enum: ["数学", "408", "英语", "政治"] },
             topic: { type: "string", minLength: 1, maxLength: 200, description: "所属知识点" },
-            question: { type: "string", minLength: 1, maxLength: 8000, description: "题目原文（可含 LaTeX）" },
+            question: { type: "string", minLength: 1, maxLength: 8000, description: "题干原文（可含 LaTeX），照抄出题时的完整题干，不要删改" },
+            options: {
+              type: "array",
+              maxItems: 10,
+              description: "选择题的全部选项（非选择题不填）。key 用出题时的字母，text 照抄选项原文（可含 LaTeX）",
+              items: {
+                type: "object",
+                properties: { key: { type: "string", maxLength: 2 }, text: { type: "string", minLength: 1, maxLength: 2000 } },
+                required: ["key", "text"],
+                additionalProperties: false,
+              },
+            },
             learnerAnswer: { type: "string", minLength: 1, maxLength: 4000 },
             correctAnswer: { type: "string", maxLength: 8000, description: "正确答案与关键步骤" },
             errorType: { type: "string", enum: ERROR_TYPES },
@@ -527,7 +611,8 @@ exports.activate = (ctx) => {
         },
         execute: async (_id, input, signal) => {
           guard(signal);
-          const m = addMistake({ ...input, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: { practice: "练习会话", prober: "测底" }[context.agent] || "教学会话", chatId: context.chatId });
+          const options = input.options?.length ? input.options : sessionOptions(context.chatId, input.question, input.learnerAnswer);
+          const m = addMistake({ ...input, options, optionsChecked: true, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: { practice: "练习会话", prober: "测底" }[context.agent] || "教学会话", chatId: context.chatId });
           changed("score");
           return textResult(`已记进错题本（${m.errorType}：${m.topic}），对应考点的星记了一次做错（难度 ${m.difficulty || "?"}）。现在按「答错之后」讲清楚，再换题检查。`, { id: m.id });
         },
@@ -789,12 +874,16 @@ exports.activate = (ctx) => {
   });
 
   // 错题本
-  op("mistakes.list", () => ({ items: store.list("mistakes"), reports: store.list("reports"), reviews: store.list("reviews") }));
+  op("mistakes.list", () => {
+    try { backfillOptions(); } catch { /* 补不上不影响列表 */ }
+    return { items: store.list("mistakes"), reports: store.list("reports"), reviews: store.list("reviews") };
+  });
   op("reviews.delete", (p) => { store.remove("reviews", str(p.id, 100)); changed("reviews"); return { ok: true }; });
   op("mistakes.add", (p) => addMistake(p));
   op("mistakes.update", (p) => {
-    const allowed = ["subject", "topic", "question", "learnerAnswer", "correctAnswer", "errorType", "diagnosis", "archived", "source"];
+    const allowed = ["subject", "topic", "question", "learnerAnswer", "correctAnswer", "errorType", "diagnosis", "archived", "source", "options"];
     const patch = Object.fromEntries(Object.entries(p.patch || {}).filter(([k]) => allowed.includes(k)));
+    if ("options" in patch) patch.options = normOptions(patch.options);
     const r = store.update("mistakes", p.id, patch);
     changed("mistakes");
     return r;
@@ -827,8 +916,11 @@ exports.activate = (ctx) => {
     progress?.(answerImgs.length, answerImgs.length + 1, "判分");
     const imgs = [...(m.images || []).map((id) => ({ data: images.get(id) })), ...raw.map((d) => ({ data: d }))];
     const res = await llm.json({
-      system: "你是考研阅卷老师。判断学生这次重做是否正确，按步骤指出问题；顺便按考研视角给这道题评难度档 difficulty（1 基础＝直接套定义或公式；2 简单＝常规变形两三步；3 中档＝考研选择 / 填空常见难度；4 较难＝真题解答题、综合两三个点；5 压轴）。输出 JSON：{\"correct\":true/false,\"score\":0-100,\"feedback\":\"批改意见（中文）\",\"difficulty\":3}",
-      text: `题目：${m.question}\n${(m.options || []).map((o) => `${o.key}. ${o.text}`).join("\n")}\n参考答案：${m.correctAnswer || "（无，请自行求解）"}\n上次的错因：${m.errorType}：${m.diagnosis}\n\n这次作答：${answerText || "（见图片中最后几张）"}${m.images?.length ? `\n（前 ${m.images.length} 张图是题目原图）` : ""}${raw.length ? `\n（最后 ${raw.length} 张图是学生手写作答）` : ""}`,
+      system: `你是考研阅卷老师。判断学生这次重做是否正确，按步骤指出问题；顺便按考研视角给这道题评难度档 difficulty（1 基础＝直接套定义或公式；2 简单＝常规变形两三步；3 中档＝考研选择 / 填空常见难度；4 较难＝真题解答题、综合两三个点；5 压轴）。
+- 有选项的是选择题：只看选的字母（或写出的结论）是否等于正确选项，选对就是 correct:true、score 100，不要求写论证；选错再说明错在哪、正确选项为什么对。
+- feedback 是 Markdown：所有数学符号和式子（哪怕只是 f(x)、x、1）都用 $...$ 包成 LaTeX，例如 $f(x+1)=f(x)$；分点用列表（"- "）或分段，不要用 ①②。
+输出 JSON：{"correct":true/false,"score":0-100,"feedback":"批改意见（中文 Markdown）","difficulty":3}`,
+      text: `题目：${m.question}\n${(m.options || []).length ? `选项：\n${m.options.map((o) => `${o.key}. ${o.text}`).join("\n")}\n` : ""}参考答案：${m.correctAnswer || "（无，请自行求解）"}\n上次的错因：${m.errorType}：${m.diagnosis}\n\n这次作答：${answerText || "（见图片中最后几张）"}${m.images?.length ? `\n（前 ${m.images.length} 张图是题目原图）` : ""}${raw.length ? `\n（最后 ${raw.length} 张图是学生手写作答）` : ""}`,
       images: imgs.map((x) => ({ ...x, mimeType: "image/jpeg" })),
       maxTokens: 3000,
       signal,
