@@ -31,6 +31,7 @@ textarea.ky-input { min-height: 64px; resize: vertical; }
 .ky-btn-primary:hover { background: color-mix(in srgb, var(--foreground) 85%, transparent); }
 .ky-btn-ghost { border-color: transparent; }
 .ky-btn-danger { color: #d0505b; border-color: color-mix(in srgb, #d0505b 45%, transparent); }
+.ky-push { margin-left: auto; }
 .ky-btn-sm { padding: 1px 8px; font-size: .8em; }
 .ky-r1 { color: #d0505b; } .ky-r2 { color: #e8a33d; } .ky-r3 { color: #18a058; } .ky-r4 { color: #4f7cff; }
 .ky-link { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; opacity: .85; }

@@ -36,9 +36,10 @@ export function mountMistakes(ctx, container, signal) {
     else renderAdd();
   }
 
-  function questionBlock(m, pick) {
+  // header=false：外面已经有标题行（「全部」里折叠卡片的摘要）时不再重复科目 / 错因 / 考点
+  function questionBlock(m, pick, header = true) {
     return el("div", "ky-q",
-      el("div", "ky-meta-row", el("span", "ky-tag", m.subject), el("span", "ky-tag", m.errorType), el("b", null, m.topic), el("span", "ky-muted", m.source)),
+      header ? el("div", "ky-meta-row", el("span", "ky-tag", m.subject), el("span", "ky-tag", m.errorType), el("b", null, m.topic), el("span", "ky-muted", m.source)) : null,
       md(ctx, m.question, signal),
       pick && m.options?.length ? choiceBlock(m, pick) : optionsBlock(ctx, m.options, signal),
       m.images?.length ? storedImages(ctx, m.images) : null);
@@ -77,7 +78,12 @@ export function mountMistakes(ctx, container, signal) {
     const started = Date.now();
     // 每次重做一个新槽位：同一道错题下次再到期时白板是干净的
     const qid = `${m.id}:${m.history?.length || 0}`;
-    put(body, el("div", "ky-row", el("span", "ky-muted", `还剩 ${list.length} 道`), board.button));
+    put(body, el("div", "ky-row", el("span", "ky-muted", `还剩 ${list.length} 道`), board.button,
+      btn("删除这道错题", async () => {
+        if (!confirm(`删除这道错题？\n${m.topic}\n删除后不能恢复。`)) return;
+        try { await ctx.call("mistakes.delete", { id: m.id }); board.forget(qid); } catch (err) { toast(root, err.message, "error"); }
+        load();
+      }, "ky-btn ky-btn-danger ky-push")));
     const card = el("section", "ky-card");
     const isChoice = !!m.options?.length;
     let chosen = "";
@@ -156,7 +162,7 @@ export function mountMistakes(ctx, container, signal) {
       det.addEventListener("toggle", () => {
         if (!det.open || det.dataset.filled) return;
         det.dataset.filled = "1";
-        put(det, questionBlock(m),
+        put(det, questionBlock(m, null, false),
           el("h4", "ky-h4", "正确答案"), md(ctx, m.correctAnswer || "（未记录）", signal),
           el("h4", "ky-h4", "诊断"), reasonBlock(m),
           answerBlock("当时作答", m.learnerAnswer),
@@ -164,7 +170,7 @@ export function mountMistakes(ctx, container, signal) {
             m.chatId ? btn("打开来源会话", () => ctx.app.openSession(m.chatId), "ky-btn ky-btn-ghost") : null,
             btn(m.archived ? "取消归档" : "归档（已彻底掌握）", async () => { await ctx.call("mistakes.update", { id: m.id, patch: { archived: !m.archived } }); load(); }),
             btn("编辑", () => editDialog(m)),
-            btn("删除", async () => { if (confirm("删除这道错题？")) { await ctx.call("mistakes.delete", { id: m.id }); load(); } }, "ky-btn ky-btn-danger")));
+            btn("删除", async () => { if (confirm(`删除这道错题？\n${m.topic}\n删除后不能恢复。`)) { await ctx.call("mistakes.delete", { id: m.id }); load(); } }, "ky-btn ky-btn-danger")));
       });
       put(body, det);
     }
