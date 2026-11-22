@@ -187,8 +187,14 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .ky-opts { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
 .ky-opt { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; }
 .ky-opt-key { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); font-family: -apple-system, "PingFang SC", sans-serif; transform: translateY(-1px); }
-.ky-option .ky-opt-key { margin-top: 3px; }
-.ky-option { align-items: flex-start; }
+/* 宿主把 Markdown 包成 div > div > p：行内块去掉首尾段距，否则文字比字母框低半行 */
+.ky-md.ky-inline p:first-child { margin-top: 0; }
+.ky-md.ky-inline p:last-child { margin-bottom: 0; }
+/* 选项行：单选框、字母框都按第一行文字（28px 行高）居中 */
+.ky-option { align-items: flex-start; line-height: 28px; }
+.ky-option .ky-md.ky-inline, .ky-option .ky-md.ky-inline div, .ky-option .ky-md.ky-inline p { line-height: inherit; }
+.ky-option > input { margin: 7.5px 0 0; flex: none; }
+.ky-option .ky-opt-key { margin-top: 3px; transform: none; }
 .ky-opt .ky-md, .ky-option .ky-md { flex: 1; min-width: 0; }
 .ky-card .ky-h4 { font-size: .78rem; letter-spacing: .06em; text-transform: none; opacity: .55; margin: 18px 0 2px; padding-top: 10px; border-top: 1px dashed var(--border); }
 .ky-card details > .ky-sum + .ky-md { margin-top: 10px; }
