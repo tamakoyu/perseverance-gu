@@ -374,6 +374,14 @@ exports.activate = (ctx) => {
       createdAt: nowIso(),
     };
     if (!m.question && !m.images.length) fail("错题至少要有题目文字或图片");
+    // 英语题不进错题本（用户要求）。题库题的对错已在作答记录里；其他英语题记一次做错给拾星
+    if (m.subject === "英语") {
+      if (!m.bankId) {
+        const dup = store.list("qlog").some((x) => x.result === "做错" && x.question === m.question.slice(0, 600) && (x.chatId || null) === m.chatId);
+        if (!dup) { score.recordQuestion({ subject: "英语", topic: m.topic, question: m.question, difficulty: m.difficulty, result: "做错", note: `${m.errorType}：${m.diagnosis}`.slice(0, 300), chatId: m.chatId, src: m.source }); changed("score"); }
+      }
+      return null;
+    }
     const items = store.list("mistakes");
     items.push(m);
     store.saveList("mistakes", items);
@@ -399,6 +407,20 @@ exports.activate = (ctx) => {
     } catch { /* 旧插件数据读不了就跳过 */ }
   }
   importStudyModeMistakes();
+
+  // 英语题不进错题本：启动时把已有的英语错题移出（先备份到 data/removed-english-mistakes.json）
+  function purgeEnglishMistakes() {
+    const items = store.list("mistakes");
+    const eng = items.filter((m) => m.subject === "英语");
+    if (!eng.length) return;
+    const file = path.join(ctx.dataDirectory, "removed-english-mistakes.json");
+    let old = [];
+    try { old = JSON.parse(fs.readFileSync(file, "utf8")).items || []; } catch { /* 第一次 */ }
+    fs.writeFileSync(file, JSON.stringify({ removedAt: nowIso(), items: [...old, ...eng] }, null, 1));
+    store.saveList("mistakes", items.filter((m) => m.subject !== "英语"));
+    changed("mistakes");
+  }
+  try { purgeEnglishMistakes(); } catch { /* 备份失败就先不删 */ }
 
   // ── 智能体规则与工具 ───────────────────────────────────
   ctx.registerInstructions({ agents: ["teacher", "practice"], text: VAULT_TEXT });
@@ -581,7 +603,7 @@ exports.activate = (ctx) => {
       tools.push({
         name: "kaoyan_log_mistake",
         label: "记录错题",
-        description: "学习者答错或答得含糊时调用：把题目、学习者回答、正确答案、错因记进错题本，之后按遗忘曲线安排重做。选择题必须把全部选项放进 options（字母和出题时一致），题干里不要写选项。",
+        description: "学习者答错或答得含糊时调用：把题目、学习者回答、正确答案、错因记进错题本，之后按遗忘曲线安排重做。选择题必须把全部选项放进 options（字母和出题时一致），题干里不要写选项。英语题照样调用，但不会进错题本，只记一次做错。",
         parameters: {
           type: "object",
           properties: {
@@ -612,6 +634,10 @@ exports.activate = (ctx) => {
         execute: async (_id, input, signal) => {
           guard(signal);
           const options = input.options?.length ? input.options : sessionOptions(context.chatId, input.question, input.learnerAnswer);
+          if (input.subject === "英语") {
+            addMistake({ ...input, source: { practice: "练习会话", prober: "测底" }[context.agent] || "教学会话", chatId: context.chatId });
+            return textResult(`英语题不进错题本，只给对应考点的星记了一次做错（难度 ${input.difficulty || "?"}）。现在按「答错之后」讲清楚，再换题检查。`, {});
+          }
           const m = addMistake({ ...input, options, optionsChecked: true, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: { practice: "练习会话", prober: "测底" }[context.agent] || "教学会话", chatId: context.chatId });
           changed("score");
           return textResult(`已记进错题本（${m.errorType}：${m.topic}），对应考点的星记了一次做错（难度 ${m.difficulty || "?"}）。现在按「答错之后」讲清楚，再换题检查。`, { id: m.id });
@@ -879,7 +905,12 @@ exports.activate = (ctx) => {
     return { items: store.list("mistakes"), reports: store.list("reports"), reviews: store.list("reviews") };
   });
   op("reviews.delete", (p) => { store.remove("reviews", str(p.id, 100)); changed("reviews"); return { ok: true }; });
-  op("mistakes.add", (p) => addMistake(p));
+  op("mistakes.add", (p) => {
+    // 手动录入的英语题直接拒绝（不要像会话里那样记一次做错）
+    const subject = ["数学", "408", "英语", "政治"].includes(p.subject) ? p.subject : stats.classify(`${p.topic} ${p.question}`);
+    if (subject === "英语") fail("英语题不进错题本");
+    return addMistake({ ...p, subject });
+  });
   op("mistakes.update", (p) => {
     const allowed = ["subject", "topic", "question", "learnerAnswer", "correctAnswer", "errorType", "diagnosis", "archived", "source", "options"];
     const patch = Object.fromEntries(Object.entries(p.patch || {}).filter(([k]) => allowed.includes(k)));
@@ -1119,7 +1150,7 @@ exports.activate = (ctx) => {
     let added = 0;
     for (const q of qs) {
       const r = results[q.id];
-      if (r.correct !== false) continue;
+      if (r.correct !== false || q.subject === "英语") continue; // 英语题不进错题本
       const a = answers[q.id] || {};
       const imgIds = (a.images || []).map((d) => images.save(d));
       addMistake({

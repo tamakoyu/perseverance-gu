@@ -160,11 +160,11 @@ function createPaper({ ctx, store, llm, pdf, images, bank, addMistake, changed }
         } else {
           // addMistake 写的是同一个缓存数组，不要再 push
           const m = addMistake({ ...fields, images: pageIds, source: "讲题会话", chatId });
-          row.mistakeId = m.id;
+          row.mistakeId = m ? m.id : null; // 英语题不进错题本，返回 null
         }
         // 已经裁过的错题（纠正时再调用）不重复裁
         const done = existing && existing.pageImages?.length;
-        if (pages.length && !done) cropJobs.push({ mistakeId: row.mistakeId, number, question: it.question, pages, pageIds: rev.pageIds, pageData });
+        if (pages.length && !done && row.mistakeId) cropJobs.push({ mistakeId: row.mistakeId, number, question: it.question, pages, pageIds: rev.pageIds, pageData });
       } else if (row.mistakeId) {
         // 学习者纠正「其实做对了」：删掉之前记的错题（没重做过的才删）
         const i = mistakes.findIndex((m) => m.id === row.mistakeId);

@@ -45,7 +45,7 @@ export function mountExam(ctx, container, signal) {
     const allowGen = el("input", { type: "checkbox", checked: true });
     const out = el("div");
     put(body, el("section", "ky-card",
-      el("p", "ky-muted", mode === "quick" ? "从题库随机抽选择 / 填空题限时速刷，交卷自动判分，错题进错题本。" : "只练某一科的某几类题型（如英语阅读 4 篇限时 80 分钟），阅读按整篇抽取。主观题交卷时拍照作答，AI 按步骤给分。"),
+      el("p", "ky-muted", mode === "quick" ? "从题库随机抽选择 / 填空题限时速刷，交卷自动判分，错题进错题本（英语题不进）。" : "只练某一科的某几类题型（如英语阅读 4 篇限时 80 分钟），阅读按整篇抽取。主观题交卷时拍照作答，AI 按步骤给分。"),
       el("div", "ky-grid2", field("科目", subj), field("考点", topic)),
       field("题型", typeBox),
       el("div", "ky-grid3", field(mode === "section" ? "题数（阅读按篇计入）" : "题数", count), field("限时（分钟，0 = 不限）", minutes), field("年份", years)),
@@ -70,7 +70,7 @@ export function mountExam(ctx, container, signal) {
     const pick = select(papers.map((p) => [p.paper, `${p.paper}（${p.count} 题）`]), preset?.paper || papers[0].paper, () => {});
     const minutes = el("input", { class: "ky-input", type: "number", value: String(FULL_MINUTES) });
     put(body, el("section", "ky-card",
-      el("p", "ky-muted", "按真实考试：整卷限时 180 分钟，客观题自动判分，主观题拍照上传手写作答，AI 按步骤给分，最后出成绩单，错题自动进错题本。建议在安静、不被打扰的时间做。"),
+      el("p", "ky-muted", "按真实考试：整卷限时 180 分钟，客观题自动判分，主观题拍照上传手写作答，AI 按步骤给分，最后出成绩单，错题自动进错题本（英语题不进）。建议在安静、不被打扰的时间做。"),
       el("div", "ky-grid2", field("试卷", pick), field("限时（分钟）", minutes)),
       btn("开始模考", async () => {
         try {
@@ -236,7 +236,7 @@ export function mountExam(ctx, container, signal) {
     const list = el("div");
     reset(root, 
       el("h2", "ky-h2", "成绩单"),
-      el("div", "ky-hero", el("div", "ky-hero-num", `${Math.round(res.got * 10) / 10}`), el("div", "ky-hero-text", el("div", "ky-hero-title", `/ ${res.total} 分（${pct}%）`), el("div", "ky-muted", `错题 ${res.added} 道已进错题本`))),
+      el("div", "ky-hero", el("div", "ky-hero-num", `${Math.round(res.got * 10) / 10}`), el("div", "ky-hero-text", el("div", "ky-hero-title", `/ ${res.total} 分（${pct}%）`), res.added ? el("div", "ky-muted", `错题 ${res.added} 道已进错题本`) : null)),
       el("table", "ky-table", el("tr", null, el("th", null, "题型"), el("th", null, "正确"), el("th", null, "得分")),
         ...Object.entries(byType).map(([k, v]) => el("tr", null, el("td", null, k), el("td", null, `${v.right}/${v.n}`), el("td", null, `${Math.round(v.got * 10) / 10}/${v.total}`)))),
       impactCard(ctx, res.impact),

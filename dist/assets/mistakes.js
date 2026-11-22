@@ -171,7 +171,7 @@ export function mountMistakes(ctx, container, signal) {
       correctAnswer: el("textarea", { class: "ky-input ky-ta" }, m.correctAnswer),
       diagnosis: el("textarea", { class: "ky-input" }, m.diagnosis),
     };
-    const subj = select(SUBJECTS, m.subject, () => {});
+    const subj = select(SUBJECTS.filter((s) => s !== "英语" || m.subject === "英语"), m.subject, () => {});
     const handle = ctx.ui.openDialog({
       title: "编辑错题",
       content: el("div", "ky-dialog",
@@ -262,7 +262,8 @@ export function mountMistakes(ctx, container, signal) {
   }
 
   function draftForm(it, shots) {
-    const subj = select(SUBJECTS, it.subject || "数学", () => {});
+    if (it.subject === "英语") return el("p", "ky-muted", `识别出一道英语题${it.topic ? `（${it.topic}）` : ""}：英语题不进错题本，已跳过。`);
+    const subj = select(SUBJECTS.filter((s) => s !== "英语"), it.subject || "数学", () => {}); // 英语题不进错题本
     const f = {
       topic: el("input", { class: "ky-input", value: it.topic || "", placeholder: "考点，如：反常积分" }),
       question: el("textarea", { class: "ky-input ky-ta", placeholder: "题目（支持 Markdown / LaTeX）" }, it.question || ""),

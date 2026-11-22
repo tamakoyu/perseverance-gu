@@ -500,7 +500,7 @@ export function mountEnglishPractice(ctx, host, signal, { onLeave } = {}) {
       el("div", "ky-row", btn("← 返回总览", overview, "ky-btn")),
       el("div", "ky-hero",
         el("div", "ky-hero-num", String(round1(a.got || 0))),
-        el("div", "ky-hero-text", el("div", "ky-hero-title", `/ ${a.total} 分（${pct}%）`), el("div", "ky-muted", `${a.title || ""} · 用时 ${clock(a.elapsedSec || 0)}${a.minutes ? ` / 限时 ${a.minutes} 分钟` : ""} · 错题已进错题本`))),
+        el("div", "ky-hero-text", el("div", "ky-hero-title", `/ ${a.total} 分（${pct}%）`), el("div", "ky-muted", `${a.title || ""} · 用时 ${clock(a.elapsedSec || 0)}${a.minutes ? ` / 限时 ${a.minutes} 分钟` : ""}`))),
       impactCard(ctx, a.impact));
     for (const g of groups) put(root, unitReview(a, g, a.review[g.key]));
   }

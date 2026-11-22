@@ -650,7 +650,7 @@ ${TIER_RUBRIC}
   }
 
   /** 会话里逐题记录（不是题库原题的题）。result：独立做对 / 提示后做对 / 部分对。 */
-  const RECORD_Q = { 独立做对: 1, 提示后做对: 0.6, 部分对: 0.5 };
+  const RECORD_Q = { 独立做对: 1, 提示后做对: 0.6, 部分对: 0.5, 做错: 0 }; // 做错只由英语题（不进错题本）写入
   function recordQuestion({ subject, topic, question, difficulty, result, note, chatId, src }) {
     const f = frame();
     const hits = f.matcher.text(["数学", "408", "英语", "政治"].includes(subject) ? subject : null, topic, question);
