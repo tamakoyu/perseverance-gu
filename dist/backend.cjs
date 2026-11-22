@@ -252,12 +252,12 @@ exports.activate = (ctx) => {
   const score = createScore({ ctx, store, bank, llm, progress, momo, getSettings: settings, transcriptText, classify: (t) => stats.classify(t), onChange: () => changed("score") });
   const paper = createPaper({ ctx, store, llm, pdf, images, bank, addMistake: (input) => addMistake(input), changed });
   const hostPrompts = createHostPrompts({ ctx, store });
-  // 启动 20 秒后：之前没归上考点 / 没评上难度的习题书题目，在后台补上（导入时的后台调用可能失败过）
+  // 启动 20 秒后：之前没归上考点 / 没评上难度的习题书题目，以及关键词对不上考点的真题，在后台补上（导入时的后台调用可能失败过）
   setTimeout(() => {
     if (ctx.signal.aborted) return;
     try {
       const ids = bank.all().filter((q) => q.source === "习题").map((q) => q.id);
-      score.queueClassify(ids);
+      score.queueClassify([...ids, ...score.unmappedIds()]);
       score.queueRate(ids);
     } catch { /* 下次启动再补 */ }
   }, 20000);

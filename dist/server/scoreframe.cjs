@@ -171,10 +171,73 @@ function keywordMatcher(frame, corpus = []) {
     }
   }
   const kwWeight = (k) => idf.get(k) ?? 1;
+  const orig = new Map(); // id → 框架里的考点对象（buildFrame 之后才有 points）
   for (const s of frame) {
     const leaves = [];
-    for (const m of s.modules) for (const c of m.chapters) for (const l of c.leaves) leaves.push({ ...l, chapter: c.name, module: m.name });
+    for (const m of s.modules) for (const c of m.chapters) for (const l of c.leaves) { leaves.push({ ...l, chapter: c.name, module: m.name }); orig.set(l.id, l); }
     bySubject.set(s.key, leaves);
+  }
+  /** 每个考点的关键词原始得分（不设门槛），给逐级兜底用。 */
+  function rawScores(leaves, topicText, bodyText) {
+    const out = new Map();
+    for (const l of leaves) {
+      if (!l.kw) continue;
+      let s = 0;
+      if (topicText.includes(l.name)) s += 6 * l.name.length;
+      for (const k of l.kw) {
+        if (!k) continue;
+        const len = Math.min(k.length, 6) * kwWeight(k);
+        if (topicText.includes(k)) s += (k.length >= 2 ? 3 : 1.5) * len;
+        else if (k.length >= 2 && bodyText.includes(k)) s += 0.6 * len;
+      }
+      if (s > 0) out.set(l.id, s);
+    }
+    return out;
+  }
+  // 名称的二字片段重合度：题目 / 考点名里有多少个二字片段出现在章节、模块名称（含下属考点名和关键词）里
+  const grams = (t) => { const g = new Set(); const x = String(t || "").replace(/[\s\p{P}$\\{}^_0-9a-zA-Z]+/gu, " "); for (const w of x.split(" ")) for (let i = 0; i < w.length - 1; i++) g.add(w.slice(i, i + 2)); return g; };
+  const overlap = (a, profile) => { let n = 0; for (const x of a) if (profile.has(x)) n++; return n; };
+  const groupCache = new Map();
+  /** 一个科目的章节 / 模块分组：[{level, name, leaves, profile}] */
+  function groups(subject) {
+    if (groupCache.has(subject)) return groupCache.get(subject);
+    const leaves = (bySubject.get(subject) || []).filter((l) => l.kind !== "vocab"); // 词汇分来自墨墨，不收题目证据
+    const chapters = new Map(), modules = new Map();
+    for (const l of leaves) {
+      const ck = `${l.module}/${l.chapter}`;
+      if (!chapters.has(ck)) chapters.set(ck, { level: "chapter", name: l.chapter, leaves: [], text: [l.chapter] });
+      if (!modules.has(l.module)) modules.set(l.module, { level: "module", name: l.module, leaves: [], text: [l.module] });
+      const c = chapters.get(ck), m = modules.get(l.module);
+      c.leaves.push(l); c.text.push(l.name, ...(l.kw || []));
+      m.leaves.push(l); if (!m.text.includes(l.chapter)) m.text.push(l.chapter);
+    }
+    const g = { leaves, chapters: [...chapters.values()], modules: [...modules.values()] };
+    for (const x of [...g.chapters, ...g.modules]) x.profile = grams(x.text.join(" "));
+    groupCache.set(subject, g);
+    return g;
+  }
+  /** 把一份证据摊到一组考点上（按考点分值的比例；还没算分值时平均）。 */
+  function spread(leaves, level, name) {
+    const pts = leaves.map((l) => orig.get(l.id)?.points || 0);
+    const sum = pts.reduce((a, b) => a + b, 0);
+    return leaves.map((l, i) => ({ id: l.id, w: sum ? pts[i] / sum : 1 / leaves.length, level, pool: name }));
+  }
+  /**
+   * 对不上具体考点时逐级往上归：章 → 模块 → 整个科目。保证（科目已知时）一定有归属。
+   * 章：章内考点关键词得分之和 + 和章名 / 考点名的二字片段重合；模块：和模块名 / 章名的重合。
+   */
+  function fallback(subject, topicText, bodyText) {
+    const g = groups(subject);
+    if (!g.leaves.length) return [];
+    const raw = rawScores(g.leaves, topicText, bodyText);
+    const tg = grams(topicText), bg = grams(bodyText);
+    const rank = (list, useRaw) => list.map((x) => ({ x, s: (useRaw ? x.leaves.reduce((a, l) => a + (raw.get(l.id) || 0), 0) : 0) + 2 * overlap(tg, x.profile) + 0.4 * overlap(bg, x.profile) })).sort((a, b) => b.s - a.s);
+    const ch = rank(g.chapters, true);
+    // 门槛 3：只靠题目里一个二字片段（如「关系」碰上「相关系数」，得 2）不够，要再有题干里的片段或关键词佐证
+    if (ch.length && ch[0].s >= 3) return spread(ch[0].x.leaves, "chapter", ch[0].x.name);
+    const md = rank(g.modules, true);
+    if (md.length && md[0].s >= 3) return spread(md[0].x.leaves, "module", md[0].x.name);
+    return spread(g.leaves, "subject", subject);
   }
   function scoreText(leaves, topicText, bodyText) {
     const scored = [];
@@ -220,21 +283,32 @@ function keywordMatcher(frame, corpus = []) {
     }
     return scoreText(leaves, (q.topics || []).join(" "), String(q.stem || "").slice(0, 600));
   }
-  /** 自由文本（错题的考点名 + 题目）。subject 不确定时传 null。 */
-  function text(subject, topic, body = "") {
-    const subjects = subject && bySubject.has(subject) ? [subject] : [...bySubject.keys()];
+  /**
+   * 自由文本（错题的考点名 + 题目）。subject 不确定时传 null。
+   * 对不上具体考点时（opts.fallback 默认开）逐级归到章 / 模块 / 科目；科目已知时一定有结果。
+   */
+  function text(subject, topic, body = "", opts = {}) {
+    const known = subject && bySubject.has(subject);
+    const subjects = known ? [subject] : [...bySubject.keys()];
+    const t = String(topic || ""), b = String(body || "").slice(0, 600);
     let best = [];
     let bestTop = 0;
     for (const s of subjects) {
-      const r = scoreText(bySubject.get(s), String(topic || ""), String(body || "").slice(0, 600));
+      const r = scoreText(bySubject.get(s), t, b);
       if (r.length) {
         const top = r[0].w;
         if (!best.length || top > bestTop) { best = r; bestTop = top; }
       }
     }
-    return best;
+    if (best.length || opts.fallback === false || !known) return best.map((h) => ({ ...h, level: "leaf" }));
+    return fallback(subject, t, b);
   }
-  return { question, text, leavesOf: (s) => bySubject.get(s) || [] };
+  /** 题库题对不上考点时的兜底（只用于计分证据，不参与考点分值统计）。 */
+  function questionFallback(q) {
+    if (!bySubject.has(q.subject)) return [];
+    return fallback(q.subject, (q.topics || []).join(" "), String(q.stem || "").slice(0, 600));
+  }
+  return { question, text, questionFallback, leavesOf: (s) => bySubject.get(s) || [] };
 }
 
 /** 用题库历年真题统计各考点分值。aiMap：{qid:[leafId…]}（AI 精确归类结果，优先）。 */

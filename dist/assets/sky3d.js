@@ -19,7 +19,7 @@ const SUBJ = {
 const GALAXY_R = 1150;
 const LEVELS = [0.6, 0.8, 1.0];
 const MOD_SHORT = { 马克思主义基本原理: "马原", 毛泽东思想和中国特色社会主义理论体系概论: "毛中特", 习近平新时代中国特色社会主义思想概论: "习思想", 中国近现代史纲要: "史纲", 思想道德与法治: "思修法基", 形势与政策及当代世界经济与政治: "时政", 概率论与数理统计: "概率统计", 计算机组成原理: "组成原理" };
-const KIND_LABEL = { taught: "讲解", practice: "练习", real: "真题" };
+const KIND_LABEL = { taught: "讲解", practice: "练习", real: "真题", vocab: "背单词" };
 const TIER_NAMES = ["", "基础", "简单", "中档", "较难", "压轴"];
 const SEEN_KEY = "kaoyan.sky3d.seen";
 const MODS_KEY = "kaoyan.sky3d.mods";
@@ -898,7 +898,7 @@ export function mountScore(ctx, container, signal) {
   function openSheet(tab) {
     if (tab) sheetTab = tab;
     closePop();
-    const tabs = [["trend", "分数走势"], ["chapters", "章节掌握"], ["daily", "每日学习"]];
+    const tabs = [["trend", "分数走势"], ["changes", "全部变化"], ["chapters", "章节掌握"], ["daily", "每日学习"]];
     const body = el("div", "sk-sheet-body");
     reset(sheet, el("div", "sk-sheet-card",
       el("div", "sk-sheet-top",
@@ -906,7 +906,7 @@ export function mountScore(ctx, container, signal) {
         el("button", { type: "button", class: "sk-x sk-x-inline", "aria-label": "关闭", onclick: closeSheet }, "×")),
       body));
     sheet.classList.add("sk-on");
-    put(body, sheetTab === "trend" ? trendChart() : sheetTab === "chapters" ? chapterChart() : heatmap());
+    put(body, sheetTab === "trend" ? trendChart() : sheetTab === "changes" ? changeList() : sheetTab === "chapters" ? chapterChart() : heatmap());
   }
   function trendChart() {
     const h = data.history;
@@ -958,6 +958,36 @@ export function mountScore(ctx, container, signal) {
         el("span", "sk-row-num", f1(c.score), el("small", null, `/${f1(c.max)}`))))),
       el("p", "sk-note", "条的长度是这一章的分值（越长越重要），亮的部分是已经拿到的分。点一行直接飞到那个星座。"));
   }
+  /** 学习情况 → 全部变化：按天分组列出每一次加分 / 扣分。 */
+  let changeSub = "";
+  function changeList() {
+    const all = allChanges();
+    const list = changeSub ? all.filter((e) => e.subject === changeSub) : all;
+    const days = [];
+    for (const e of list) {
+      const d = new Date(dayStart(e.at));
+      const key = `${d.getMonth() + 1}月${d.getDate()}日`;
+      let g = days[days.length - 1];
+      if (!g || g.key !== key) days.push((g = { key, items: [], net: 0 }));
+      g.items.push(e); g.net += e.delta;
+    }
+    const up = list.filter((e) => e.delta > 0).reduce((a, e) => a + e.delta, 0);
+    const down = list.filter((e) => e.delta < 0).reduce((a, e) => a + e.delta, 0);
+    const subs = [["", "全部"], ...data.subjects.map((s) => [s.key, SUBJ[s.key]?.short || s.key])];
+    const srcOf = (e) => [...new Set(e.items.map((x) => x.src || x.label).filter(Boolean))].slice(0, 2).join("、");
+    return el("div", null,
+      el("div", "sk-sheet-head",
+        el("div", null, el("div", "sk-kicker", `共 ${list.length} 次变化`), el("div", "sk-sheet-title", "每一次分数变化")),
+        el("div", "sk-mini-stats", el("div", null, el("b", "sk-up", `+${f1(up)}`), el("span", null, "加分")), el("div", null, el("b", "sk-down", f1(down)), el("span", null, "扣分")))),
+      el("div", "sk-seg sk-seg-sm", ...subs.map(([k, n]) => el("button", { type: "button", class: `sk-seg-b${k === changeSub ? " sk-on" : ""}`, onclick: () => { changeSub = k; openSheet("changes"); } }, n))),
+      days.length ? el("div", "sk-changes", ...days.map((g) => el("div", "sk-cday",
+        el("div", "sk-cday-h", el("b", null, g.key), el("span", g.net >= 0 ? "sk-up" : "sk-down", `当天 ${fDelta(g.net)}`)),
+        ...g.items.map((e) => el("button", { type: "button", class: "sk-feed-row sk-crow", onclick: () => openChange(e) },
+          el("b", e.delta >= 0 ? "sk-up" : "sk-down", fDelta(e.delta)),
+          el("span", null, e.name, e.chapter ? el("small", null, ` · ${e.chapter}`) : null),
+          el("small", null, `${KIND_LABEL[e.kind] || e.kind}${e.count > 1 ? ` ×${e.count}` : ""}${srcOf(e) ? ` · ${srcOf(e)}` : ""} · ${new Date(e.at).toTimeString().slice(0, 5)}`)))))) : el("p", "sk-note", "还没有分数变化。"),
+      el("p", "sk-note", "同一天里同一个考点、同一类学习（讲解 / 练习 / 真题）的变化合并成一行；英语词汇按墨墨每天同步一次算。点一行飞到对应的星。"));
+  }
   function heatmap() {
     const daily = data.daily || {};
     const end = new Date(); end.setHours(0, 0, 0, 0);
@@ -965,8 +995,11 @@ export function mountScore(ctx, container, signal) {
     start.setDate(start.getDate() - ((start.getDay() + 6) % 7)); // 从周一开始
     const key = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const cells = [];
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) cells.push({ day: key(d), wd: (d.getDay() + 6) % 7, ...(daily[key(d)] || { n: 0, gain: 0 }) });
-    const maxN = Math.max(1, ...cells.map((c) => c.n));
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) cells.push({ day: key(d), wd: (d.getDay() + 6) % 7, n: 0, words: 0, gain: 0, ...(daily[key(d)] || {}) });
+    // 学习量：一条做题 / 讲解 / 重做记录算 1，墨墨每 25 个词算 1；按最多的那天分 4 档（像 GitHub 贡献图）
+    for (const c of cells) c.amt = c.n + (c.words || 0) / 25;
+    const maxA = Math.max(1, ...cells.map((c) => c.amt));
+    const LV = [0, 0.18, 0.38, 0.62, 0.95];
     const S = 15, G = 4;
     const cols = Math.ceil(cells.length / 7);
     const W = 30 + cols * (S + G), H = 7 * (S + G) + 22;
@@ -979,19 +1012,23 @@ export function mountScore(ctx, container, signal) {
       const x = 30 + col * (S + G), y = 20 + c.wd * (S + G);
       const m = Number(c.day.slice(5, 7));
       if (c.wd === 0 && m !== lastMonth) { lastMonth = m; g.append(svg("text", { x, y: 12, class: "sk-axis" }, txt(`${m}月`))); }
-      const lvl = c.n ? 0.25 + 0.75 * Math.sqrt(c.n / maxN) : 0;
-      const rect = svg("rect", { x, y, width: S, height: S, rx: 4, class: `sk-hcell${c.n ? " sk-hcell-on" : ""}`, style: `--l:${lvl.toFixed(2)};animation-delay:${col * 14}ms` });
-      rect.addEventListener("pointerenter", () => reset(readout, el("b", null, c.day), c.n ? `  ·  ${c.n} 条学习记录  ·  预测分 +${f1(c.gain)}` : "  ·  没有学习记录"));
+      const lv = c.amt > 0 ? Math.min(4, Math.max(1, Math.ceil(Math.sqrt(c.amt / maxA) * 4))) : 0; // 开方：少的几天之间也拉得开
+      const rect = svg("rect", { x, y, width: S, height: S, rx: 4, class: `sk-hcell${lv ? " sk-hcell-on" : ""}`, "data-lv": lv });
+      rect.style.setProperty("--l", String(LV[lv]));
+      rect.style.animationDelay = `${col * 14}ms`;
+      const parts = [c.n ? `${c.n} 条做题 / 讲解记录` : "", c.words ? `墨墨 ${c.words} 词` : "", c.gain ? `预测分 +${f1(c.gain)}` : ""].filter(Boolean);
+      rect.addEventListener("pointerenter", () => reset(readout, el("b", null, c.day), parts.length ? `  ·  ${parts.join("  ·  ")}` : "  ·  没有学习记录"));
       g.append(rect);
     });
-    const active = cells.filter((c) => c.n).length;
-    let streak = 0; for (let i = cells.length - 1; i >= 0 && cells[i].n; i--) streak++;
+    const active = cells.filter((c) => c.amt > 0).length;
+    let streak = 0; for (let i = cells.length - 1; i >= 0 && cells[i].amt > 0; i--) streak++;
     const gain = cells.reduce((a, c) => a + c.gain, 0);
     return el("div", null,
       el("div", "sk-sheet-head", el("div", null, el("div", "sk-kicker", "最近半年"), el("div", "sk-sheet-title", "每天的学习记录")),
         el("div", "sk-mini-stats", el("div", null, el("b", null, `${active}`), el("span", null, "学习天数")), el("div", null, el("b", null, `${streak}`), el("span", null, "连续天数")), el("div", null, el("b", null, `+${f1(gain)}`), el("span", null, "累计加分")))),
       el("div", "sk-heat-wrap", g), readout,
-      el("p", "sk-note", "一格是一天，越亮学得越多（会话结算的考点、做的题、错题重做都算）。"));
+      el("div", "sk-heat-legend", el("span", null, "少"), ...LV.map((l) => el("i", { style: `--l:${l}` })), el("span", null, "多")),
+      el("p", "sk-note", "一格是一天，越亮学得越多：会话结算的考点、做的题、错题重做每条算 1，墨墨每 25 个词算 1，按和最多那天的比例（开方）分 4 档。墨墨只记得每个词的首次学习和最近一次复习，所以更早的日子单词数会偏少。"));
   }
 
   // ── HUD ─────────────────────────────────────────────
@@ -1016,17 +1053,34 @@ export function mountScore(ctx, container, signal) {
       el("button", { type: "button", class: "sk-pill sk-pill-icon", "aria-label": "怎么读", onclick: (e) => { e.stopPropagation(); pop.classList.contains("sk-on") ? closePop() : openPop(); } }, "?"));
     reset(dock, ...data.subjects.map((s) => el("button", { type: "button", class: "sk-chip", style: `--c:${SUBJ[s.key].css}`, onclick: () => go(1, { subject: s.key }) },
       el("span", "sk-chip-name", SUBJ[s.key].short), el("span", "sk-chip-num", el("b", null, f1(s.score)), `/${s.max}`), bar(s.score / s.max))));
-    const ev = [];
-    for (const s of data.subjects) for (const m of s.modules) for (const c of m.chapters) for (const l of c.leaves) for (const e of l.evidence || []) ev.push({ ...e, leaf: l });
-    ev.sort((a, b) => (a.at < b.at ? 1 : -1));
-    const grouped = [];
-    for (const e of ev) { const pv = grouped[grouped.length - 1]; if (pv && pv.leaf.id === e.leaf.id && dayStart(pv.at) === dayStart(e.at) && pv.kind === e.kind) { pv.delta += e.delta; pv.count++; } else grouped.push({ ...e, count: 1 }); }
-    const recent = grouped.filter((e) => Math.abs(e.delta) >= 0.05).slice(0, 5);
+    const recent = allChanges().slice(0, 5);
     reset(feed, recent.length ? el("div", "sk-feed-h", el("i"), `最近 ${recent.length} 次变化`) : null,
-      el("div", "sk-feed-list", ...recent.map((e) => el("button", { type: "button", class: "sk-feed-row", onclick: () => { const st = starOf(e.leaf.id); if (st) { nav.subject = st.subject; nav.chapter = st.chapter; go(3, { star: st }); } } },
-        el("b", e.delta >= 0 ? "sk-up" : "sk-down", `${e.delta >= 0 ? "+" : ""}${e.delta.toFixed(1)}`),
-        el("span", null, e.leaf.name),
-        el("small", null, `${KIND_LABEL[e.kind]}${e.count > 1 ? ` ×${e.count}` : ""} · ${ago(e.at)}`)))));
+      el("div", "sk-feed-list", ...recent.map((e) => el("button", { type: "button", class: "sk-feed-row", onclick: () => openChange(e) },
+        el("b", e.delta >= 0 ? "sk-up" : "sk-down", fDelta(e.delta)),
+        el("span", null, e.name),
+        el("small", null, `${KIND_LABEL[e.kind] || e.kind}${e.count > 1 ? ` ×${e.count}` : ""} · ${ago(e.at)}`)))));
+  }
+  const fDelta = (d) => `${d >= 0 ? "+" : ""}${Math.abs(d) < 0.1 ? d.toFixed(2) : d.toFixed(1)}`;
+  /** 所有分数变化（新的在前）：考点证据按「同一天、同一考点、同一类」合并，再加上墨墨词汇每天的变化。 */
+  function allChanges() {
+    const ev = [];
+    for (const s of data.subjects) for (const m of s.modules) for (const c of m.chapters) for (const l of c.leaves) for (const e of l.evidence || []) ev.push({ ...e, leafId: l.id, name: l.name, subject: s.key, chapter: c.name });
+    for (const e of data.changes || []) ev.push({ ...e });
+    ev.sort((a, b) => (a.at < b.at ? 1 : -1));
+    const grouped = [], byKey = new Map();
+    for (const e of ev) {
+      const k = e.leafId ? `${e.leafId}|${dayStart(e.at)}|${e.kind}` : null;
+      const pv = k && byKey.get(k);
+      if (pv) { pv.delta += e.delta; pv.count++; pv.items.push(e); } // 时间取这组里最新的一次（ev 已按时间倒序）
+      else { const g = { ...e, count: 1, items: [e] }; grouped.push(g); if (k) byKey.set(k, g); }
+    }
+    return grouped.filter((e) => Math.abs(e.delta) >= 0.01);
+  }
+  function openChange(e) {
+    closeSheet();
+    if (!e.leafId) { go(1, { subject: e.subject || "英语" }); return; }
+    const st = starOf(e.leafId);
+    if (st) { nav.subject = st.subject; nav.chapter = st.chapter; go(3, { star: st }); }
   }
   document.addEventListener("pointerdown", (e) => { if (!pop.contains(e.target) && !tools.contains(e.target)) closePop(); }, { signal });
   sheet.addEventListener("click", (e) => { if (e.target === sheet) closeSheet(); });
@@ -1052,20 +1106,24 @@ export function mountScore(ctx, container, signal) {
       vocabLit = d.vocab?.mastery || 0;
       const seen = jget(SEEN_KEY);
       let delay = 0;
+      // 流星：和上次看到的考点分数（单位：分）比较。掌握度只保留两位小数，小的加分会被四舍五入吃掉，所以不用它比
       for (const st of L.stars) {
         const l = st.leaf;
-        const target = l.now ?? 0;
+        const target = l.score ?? 0;
         const look = lookOf(l);
-        const was = st.id in targets ? targets[st.id] : seen?.leaves?.[st.id];
+        // 旧版只存了两位小数的掌握度（seen.leaves）：换算成分数，并把四舍五入的误差算进门槛，避免没变化也放流星
+        const legacy = !(st.id in targets) && seen?.scores == null && seen?.leaves?.[st.id] != null && l.points;
+        const was = st.id in targets ? targets[st.id] : seen?.scores ? seen.scores[st.id] : legacy ? seen.leaves[st.id] * l.points : undefined;
+        const gained = was != null && target >= was + 0.01 + (legacy ? 0.005 * l.points : 0) && !reduceMotion();
         if (first) {
           st.delay = st.pos.length() / 420 + Math.random() * 0.4;
-          if (was != null && target > was + 0.004 && !reduceMotion()) { st.obj.setLook(lookOf({ ...l, now: was, m: was, due: false }), true); gainMeteor(st, look, 4000 + delay); delay += 320; }
+          if (gained) { const wm = l.points ? clamp(was / l.points, 0, 1) : 0; st.obj.setLook(lookOf({ ...l, now: wm, m: wm, due: false }), true); gainMeteor(st, look, 4000 + delay); delay += 320; }
           else st.obj.setLook(look, true);
-        } else if (was != null && target > was + 0.004 && !reduceMotion() && !preview) { gainMeteor(st, look, delay); delay += 320; }
+        } else if (gained && !preview) { gainMeteor(st, look, delay); delay += 320; }
         else if (!preview) st.obj.setLook(look);
       }
-      targets = Object.fromEntries(L.stars.map((s) => [s.id, s.leaf.now ?? 0]));
-      jset(SEEN_KEY, { total: d.total, leaves: targets });
+      targets = Object.fromEntries(L.stars.map((s) => [s.id, s.leaf.score ?? 0]));
+      jset(SEEN_KEY, { total: d.total, scores: targets });
       renderHud(first ? (seen?.total ?? 0) : shownTotal);
       shownTotal = d.total;
       checkMilestones(first);

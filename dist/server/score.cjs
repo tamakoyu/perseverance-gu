@@ -107,8 +107,10 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
     for (const [qid, evs] of map) {
       const q = f.qMap.get(qid);
       if (!q) continue;
-      const hits = f.mapQ(q);
+      let hits = f.mapQ(q);
+      if (!hits.length) hits = f.matcher.questionFallback(q);
       if (!hits.length) continue;
+      const pooled = hits[0].level && hits[0].level !== "leaf" ? `没对上具体考点，按${{ chapter: "章", module: "模块", subject: "科目" }[hits[0].level]}「${hits[0].pool}」整体计` : "";
       const kind = q.source === "AI生成" || q.source === "习题" ? "practice" : "real";
       const base = qDiff(q, dm);
       for (const e of evs) {
@@ -117,12 +119,14 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
         const at = Date.parse(e.at);
         if (!at) continue;
         const d = d15(e.difficulty, base);
-        for (const h of hits) push(h.id, { at, kind, q: qv, w: h.w, d, qid, label: `${q.paper || "题库"}${q.number ? ` 第${q.number}题` : ""}`, src: e.source || "练习" });
+        for (const h of hits) push(h.id, { at, kind, q: qv, w: h.w, d, qid, label: `${q.paper || "题库"}${q.number ? ` 第${q.number}题` : ""}`, src: e.source || "练习", note: pooled });
       }
     }
     // 旧版结算（v<2）的练习评估里已经包含了那次会话的错题，避免重复计入
     const oldSettled = new Set(settlements().filter((x) => (x.v || 1) < 2).map((x) => x.chatId));
-    const textHits = (subject, topic, body) => f.matcher.text(["数学", "408", "英语", "政治"].includes(subject) ? subject : null, topic, body);
+    const textHits = (subject, topic, body) => matchText(f, subject, topic, body);
+    // 没对上具体考点、按章 / 模块 / 科目整体计的，在证据里注明
+    const poolNote = (hits, note = "") => { const h = hits[0]; const p = h && h.level && h.level !== "leaf" ? `没对上具体考点，按${{ chapter: "章", module: "模块", subject: "科目" }[h.level]}「${h.pool}」整体计` : ""; return [p, note].filter(Boolean).join("；"); };
     // 2) 不带题库 id 的错题（会话里出的题、讲题批改、手动录入）：记错题算一次做错，重做按结果
     for (const m of store.list("mistakes")) {
       if (m.bankId) continue;
@@ -133,13 +137,13 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
       const qid = `m:${m.id}`;
       if (!(m.chatId && oldSettled.has(m.chatId))) {
         const at = Date.parse(m.createdAt);
-        if (at) for (const h of hits) push(h.id, { at, kind: "practice", q: 0, w: h.w, d, qid, label, src: m.source || "错题本", soft: SLIPS.has(m.errorType) });
+        if (at) for (const h of hits) push(h.id, { at, kind: "practice", q: 0, w: h.w, d, qid, label, src: m.source || "错题本", soft: SLIPS.has(m.errorType), note: poolNote(hits) });
       }
       for (const h of m.history || []) {
         const at = Date.parse(h.at);
         const qv = h.correct === true ? 1 : h.correct === false ? 0 : h.rating ? (h.rating >= 3 ? 1 : h.rating === 2 ? 0.5 : 0) : null;
         if (!at || qv == null) continue;
-        for (const x of hits) push(x.id, { at, kind: "practice", q: qv, w: x.w, d, qid, label: `${label}（重做）`, src: "错题重做" });
+        for (const x of hits) push(x.id, { at, kind: "practice", q: qv, w: x.w, d, qid, label: `${label}（重做）`, src: "错题重做", note: poolNote(hits) });
       }
     }
     // 3) 会话里逐题记录的题（kaoyan_record_question：答对 / 提示后对 / 部分对）
@@ -147,7 +151,7 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
       const at = Date.parse(r.at);
       const hits = textHits(r.subject, r.topic, r.question);
       if (!at || !hits.length) continue;
-      for (const h of hits) push(h.id, { at, kind: "practice", q: r.q, w: h.w, d: d15(r.difficulty), label: r.topic, src: r.src || "会话", note: r.note || "" });
+      for (const h of hits) push(h.id, { at, kind: "practice", q: r.q, w: h.w, d: d15(r.difficulty), label: r.topic, src: r.src || "会话", note: poolNote(hits, r.note || "") });
     }
     // 4) 讲题批改里做对的题（做错的已经进了错题本）
     for (const rev of store.list("reviews")) {
@@ -157,7 +161,7 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
         if (!it.correct) continue;
         const hits = textHits(rev.subject, it.topic, "");
         const qv = it.score != null && it.fullScore ? Math.max(0, Math.min(1, it.score / it.fullScore)) : 1;
-        for (const h of hits) push(h.id, { at, kind: "practice", q: qv, w: h.w, d: d15(it.difficulty), label: `${rev.title || "讲题"} 第${it.number}题`, src: "讲题批改" });
+        for (const h of hits) push(h.id, { at, kind: "practice", q: qv, w: h.w, d: d15(it.difficulty), label: `${rev.title || "讲题"} 第${it.number}题`, src: "讲题批改", note: poolNote(hits) });
       }
     }
     // 5) 会话结算：讲解按「基础」档；没有逐题记录的练习按结算给的难度档
@@ -172,6 +176,13 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
     return obs;
   }
 
+  /** 自由文本 → 考点（对不上具体考点时逐级归到章 / 模块 / 科目）。科目不明时先按文本分类，保证有归属。 */
+  function matchText(f, subject, topic, body) {
+    let s = ["数学", "408", "英语", "政治"].includes(subject) ? subject : null;
+    if (!s) { const c = classify(`${topic || ""} ${body || ""}`); s = ["数学", "408", "英语", "政治"].includes(c) ? c : null; }
+    return f.matcher.text(s, topic, body);
+  }
+
   /** 回放一个考点的证据，得到 at 时刻的状态。 */
   function replay(list, at, points) {
     const st = { m: 0, S: 0, last: null, n: 0, real: 0, top: 0, evidence: [] };
@@ -183,7 +194,7 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
       const elapsed = st.last ? (o.at - st.last) / DAY : 0;
       const R = st.last ? Rf(elapsed, st.S) : 1;
       const cur = st.m * (st.last ? keep(R) : 1);
-      let w = Math.max(0.05, Math.min(2, o.w));
+      let w = Math.max(0.005, Math.min(2, o.w)); // 按章 / 模块整体计时每个考点只分到一小份，下限不能高，否则摊开后总量被放大
       if (o.qid) {
         const prev = seen.get(o.qid);
         if (prev != null && (o.at - prev) / DAY < 3) w *= 0.3; // 刚做过的题还记得答案
@@ -314,8 +325,9 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
   function snapshotVocab(v) {
     const h = store.value("scoreHistory", { vocab: {} });
     const d = today();
-    if (h.vocab[d] === r2(v.mastery)) return;
-    h.vocab[d] = r2(v.mastery);
+    const val = Math.round(v.mastery * 1e4) / 1e4; // 4 位小数：一天背的词带来的变化在 2 位小数下常常看不出来
+    if (h.vocab[d] === val) return;
+    h.vocab[d] = val;
     store.saveValue("scoreHistory", h);
   }
   function vocabAt(dateStr, fallback) {
@@ -385,16 +397,35 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
       if (l.due && !l.vocab && !l.band) review.push({ id: l.id, name: l.name, subject: sub.key, chapter: c.name, points: l.points, score: l.score, R: l.R, loss: l.loss || 0, last: l.last });
     }
     review.sort((a, b) => b.loss - a.loss);
-    // 每天的学习量：证据条数 + 当天带来的加分（热力图用，最近 26 周）
+    // 每天的学习量（热力图用，最近 26 周）：n＝做题 / 讲解 / 重做等证据条数，words＝墨墨里这天新学或复习的词，gain＝这天带来的加分
     const daily = {};
-    for (const o of obs) { const d = today(new Date(o.at)); if (o.at >= now - 182 * DAY) (daily[d] ||= { n: 0, gain: 0 }).n++; }
+    const since = now - 182 * DAY;
+    const day = (d) => (daily[d] ||= { n: 0, words: 0, gain: 0 });
+    for (const o of obs) if (o.at >= since) day(today(new Date(o.at))).n++;
     for (const sub of cur.subjects) for (const m of sub.modules) for (const c of m.chapters) for (const l of c.leaves) for (const e of l.evidence || []) {
-      if (e.delta > 0) { const d = today(new Date(e.at)); if (daily[d]) daily[d].gain = r2(daily[d].gain + e.delta); }
+      if (e.delta > 0 && Date.parse(e.at) >= since) { const x = day(today(new Date(e.at))); x.gain = r2(x.gain + e.delta); }
+    }
+    // 墨墨只记每个词的首次学习日和最近一次复习日，所以更早的日子只能数到「新学 + 最近一次复习落在这天」的词
+    for (const w of momo.cache().words || []) {
+      const days = new Set([w.first, w.last].filter(Boolean).map((t) => Date.parse(t)).filter((t) => t >= since).map((t) => today(new Date(t))));
+      for (const d of days) day(d).words++;
+    }
+    // 词汇分的变化（墨墨同步后每天一个快照），也算进「变化」和当天加分
+    const changes = [];
+    const vh = store.value("scoreHistory", { vocab: {} }).vocab;
+    const vdays = Object.keys(vh).sort();
+    for (let i = 1; i < vdays.length; i++) {
+      const delta = r2((vh[vdays[i]] - vh[vdays[i - 1]]) * cur.vocabMax);
+      if (!delta) continue;
+      const at = vdays[i] === today() && cur.vocab.at ? cur.vocab.at : new Date(`${vdays[i]}T21:00:00`).toISOString();
+      changes.push({ at, kind: "vocab", leafId: null, name: "英语词汇（墨墨）", subject: "英语", delta, label: `词汇掌握 ${Math.round(vh[vdays[i - 1]] * 1000) / 10}% → ${Math.round(vh[vdays[i]] * 1000) / 10}%`, src: "墨墨背单词" });
+      if (delta > 0 && Date.parse(at) >= since) { const x = day(vdays[i]); x.gain = r2(x.gain + delta); }
     }
     const f = frame();
     return {
       ...cur,
       daily,
+      changes,
       examDate, daysLeft: Math.ceil(daysLeft),
       projection: { value: r1(projected), low: r1(Math.max(idleTotal, projected - spread)), high: r1(Math.min(500, projected + spread)), slope: r2(slope), window: win, idle: r1(idleTotal), vocabPerDay: r1(newPerDay), dataDays: Math.round(dataDays) },
       history,
@@ -653,12 +684,13 @@ ${TIER_RUBRIC}
   const RECORD_Q = { 独立做对: 1, 提示后做对: 0.6, 部分对: 0.5, 做错: 0 }; // 做错只由英语题（不进错题本）写入
   function recordQuestion({ subject, topic, question, difficulty, result, note, chatId, src }) {
     const f = frame();
-    const hits = f.matcher.text(["数学", "408", "英语", "政治"].includes(subject) ? subject : null, topic, question);
+    const hits = matchText(f, subject, topic, question);
     const entry = { id: uid(), at: nowIso(), chatId: chatId || null, subject: subject || "", topic: str(topic, 200), question: str(question, 600), difficulty: d15(difficulty), result: RECORD_Q[result] != null ? result : "独立做对", q: RECORD_Q[result] ?? 1, note: str(note || "", 300), src: src || "会话" };
     const list = store.list("qlog");
     list.push(entry);
     store.saveList("qlog", list);
-    return { entry, leaves: hits.map((h) => f.leaves.get(h.id)?.name).filter(Boolean) };
+    const pooled = hits[0]?.level && hits[0].level !== "leaf";
+    return { entry, leaves: pooled ? [`${hits[0].pool}（没对上具体考点，按${{ chapter: "章", module: "模块", subject: "科目" }[hits[0].level]}整体计）`] : hits.map((h) => f.leaves.get(h.id)?.name).filter(Boolean) };
   }
 
   /** 一个考点对应的题库真题（用来「用真题练这个考点」）。 */
@@ -735,11 +767,11 @@ ${TIER_RUBRIC}
     let picked = [...chapters.values()].filter((c) => c.score > 0).sort((a, b) => b.score - a.score);
     if (picked.length) picked = picked.filter((c) => c.score >= picked[0].score * 0.6).slice(0, 2);
     else {
-      const hits = f.matcher.text(subject || null, query, query);
+      const hits = f.matcher.text(subject || null, query, query).filter((h) => h.level === "leaf" || h.level === "chapter"); // 模块 / 科目级兜底对「查章节」没意义
       const keys = [...new Set(hits.map((h) => { const l = f.leaves.get(h.id); return l && `${l.subject}/${l.module}/${l.chapter}`; }).filter(Boolean))];
       picked = keys.slice(0, 2).map((k) => chapters.get(k)).filter(Boolean);
     }
-    if (!picked.length) return { text: `没找到和「${query}」对应的考纲章节。换成章节名或考点名再查（如「函数 极限 连续」「一元函数微分学」「栈和队列」）；「子列」这类细分点不在考纲考点表里，用 kaoyan_bank_search 搜它，看近 15 年命中几道。`, leaves: [] };
+    if (!picked.length) return { text: `没找到和「${query}」对应的考纲章节。换成章节名或考点名再查（如「函数 极限 连续」「一元函数微分学」「栈和队列」）；太细的点（如某个具体技巧）不在考纲考点表里，用 kaoyan_bank_search 搜它，看近 15 年命中几道。`, leaves: [] };
 
     const ev = evaluate(Date.now(), { detail: false });
     const view = new Map();
@@ -772,7 +804,12 @@ ${TIER_RUBRIC}
     return { text: out.join("\n"), leaves };
   }
 
-  return { frame, overview, evaluate, measure, diff, settle, unsettled, classifyBank, questionsOf, collect, focus, rateBank, queueRate, queueClassify, recordQuestion, TIERS, qDiff };
+  /** 关键词和 AI 都还没归上考点的数学 / 408 题（交给后台 AI 归类；归上之前计分时按章 / 模块 / 科目兜底）。 */
+  function unmappedIds() {
+    const f = frame();
+    return [...f.qMap.values()].filter((q) => ["数学", "408"].includes(q.subject) && !f.mapQ(q).length).map((q) => q.id);
+  }
+  return { frame, overview, evaluate, measure, diff, settle, unsettled, classifyBank, questionsOf, collect, focus, rateBank, queueRate, queueClassify, recordQuestion, unmappedIds, TIERS, qDiff };
 }
 
 module.exports = { createScore };
