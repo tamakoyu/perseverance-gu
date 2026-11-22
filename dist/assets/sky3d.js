@@ -867,13 +867,13 @@ export function mountScore(ctx, container, signal) {
     };
     const ev = l.evidence || [];
     openPanel(
-      head(`${SUBJ[s.key].short} / ${hit.c.name}`, l.name, l.score, l.points, el("span", `sk-st ${cls}`, stt), nextCap(l), l.due),
+      head(`${SUBJ[s.key].short} / ${hit.c.name}`, l.name, l.score, l.points, el("span", `sk-st ${cls}`, stt), null, l.due),
       el("div", "sk-stats",
-        el("div", "sk-stat", el("span", null, "掌握度"), el("b", null, pct(l.m)), el("small", null, `${l.n || 0} 条记录`)),
         el("div", "sk-stat", el("span", null, "记忆保持"), el("b", null, l.last ? pct(l.R) : "—"), el("small", null, l.last ? `稳定 ${Math.round(l.S)} 天` : "—")),
+        el("div", "sk-stat", el("span", null, "作答记录"), el("b", null, `${l.own ?? l.n ?? 0}`), el("small", null, "条")),
         el("div", "sk-stat", el("span", null, "历年真题"), el("b", null, `${Math.round(l.realCount || 0)}`), el("small", null, "道"))),
       l.last ? el("p", "sk-note sk-facts", `上次 ${ago(l.last)} · ${l.due ? "该复习" : `复习 ${fmtDate(l.dueAt).slice(5)}`} · 30天后 ${f1(forecast(30))} · 90天后 ${f1(forecast(90))}`) : null,
-      tierLadder(l),
+      masteryBlock(l),
       coveragePanel(s.key, l.name, [l.id]),
       el("section", "sk-sec", el("h4", "sk-h", "相关真题"), qinfo),
       el("section", "sk-sec",
@@ -891,28 +891,27 @@ export function mountScore(ctx, container, signal) {
       reset(qinfo, el("p", "sk-note", `${r.total} 道 · 做过 ${r.done}`), ...more(rows, 5, `再看 ${rows.length - 5} 道`));
     }, () => reset(qinfo));
   }
-  /** 下一档的掌握度上限（刻度尺上的竖线）。 */
-  const nextCap = (l) => { const tiers = data.tiers || []; if (!tiers.length || !l.n) return null; const m = l.m || 0; const T = tiers.find((x) => x.cap > m + 0.03); return T ? T.cap : null; };
-  /** 难度阶梯：五档按掌握度区间宽度并排，一条分段刻度显示当前掌握度；档的说明放在悬停提示里。 */
-  function tierLadder(l) {
+  /** 掌握度：一个数 + 一根进度条；有记录时可以展开，看各难度的预计做对率（建议练的那档亮一点）。 */
+  function masteryBlock(l) {
     const tiers = data.tiers || [];
-    if (!tiers.length) return null;
-    const m = l.m || 0;
-    const next = tiers.find((T) => T.cap > m + 0.03) || tiers[tiers.length - 1];
-    const cols = tiers.map((T, i) => `${Math.round((T.cap - (i ? tiers[i - 1].cap : 0)) * 100)}fr`).join(" ");
-    const cells = tiers.map((T, i) => {
-      const lo = i ? tiers[i - 1].cap : 0;
-      const fill = clamp((m - lo) / (T.cap - lo), 0, 1);
-      const done = (l.top || 0) >= T.d;
-      const cls = T.d === next.d && m < 0.97 ? " sk-tier-now" : done ? " sk-tier-done" : "";
-      return el("div", { class: `sk-tier${cls}`, title: `${T.name}：${T.desc}` },
-        el("span", "sk-tier-name", T.name, done ? el("small", null, " ✓") : null),
-        el("span", "sk-tier-bar", el("i", { style: `width:${fill * 100}%` })),
-        el("small", "sk-tier-cap", `${Math.round(T.cap * 100)}%`));
-    });
-    return el("section", "sk-sec",
-      el("h4", "sk-h", "难度阶梯"),
-      el("div", { class: "sk-tiers", style: `grid-template-columns:${cols}` }, ...cells));
+    const p = l.pTier || [];
+    const m = clamp(l.now ?? l.m ?? 0, 0, 1);
+    const has = !!(l.own ?? l.n) && p.length === tiers.length && tiers.length;
+    const rows = has ? el("div", { class: "sk-mz-rows", id: `sk-mz-${l.id.replace(/[^\w]/g, "_")}`, hidden: true },
+      ...tiers.map((T, i) => el("div", { class: `sk-mz-row${T.d === l.next ? " sk-mz-now" : ""}`, title: T.desc },
+        el("span", "sk-mz-name", T.name, (l.top || 0) >= T.d ? el("small", null, "✓") : null),
+        el("span", "sk-mz-track", el("i", { style: `width:${clamp(p[i] || 0, 0, 1) * 100}%` })),
+        el("span", "sk-mz-pct", `${Math.round((p[i] || 0) * 100)}%`)))) : null;
+    const more = has ? el("button", { type: "button", class: "sk-mz-more", "aria-expanded": "false", "aria-controls": rows.id, onclick: () => {
+      const open = more.getAttribute("aria-expanded") !== "true";
+      more.setAttribute("aria-expanded", String(open));
+      rows.hidden = !open;
+    } }, "按难度看", el("i", { "aria-hidden": "true" })) : null;
+    return el("section", "sk-sec sk-mz",
+      el("div", "sk-mz-head", el("span", null, "掌握度"), el("b", null, `${Math.round(m * 100)}`, el("small", null, "%"))),
+      el("div", { class: "sk-mz-bar", role: "progressbar", "aria-label": "掌握度", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(m * 100)) }, el("i", { style: `transform:scaleX(${m})` })),
+      el("div", "sk-mz-foot", el("span", null, has ? `建议练${tiers[(l.next || 1) - 1]?.name || ""}题` : "还没有作答记录"), more),
+      rows);
   }
   function showPlanet(q, kind) {
     const st = nav.star;
@@ -1041,7 +1040,7 @@ export function mountScore(ctx, container, signal) {
         el("div", "sk-legend-row", el("span", "sk-legend-orbs", el("i", { class: "sk-orb sk-orb-due", style: "--g:.5" })), el("span", null, "外圈冰蓝细环＝记忆在掉，该复习")),
         el("div", "sk-legend-row", el("span", "sk-legend-orbs", el("i", { class: "sk-orb sk-orb-s", style: "--g:.6" }), el("i", { class: "sk-orb sk-orb-l", style: "--g:.6" })), el("span", null, "球越大，这个考点分值越高")),
         el("div", "sk-legend-row", el("span", "sk-legend-orbs sk-legend-dust"), el("span", null, "背景星跟着所在章节变亮；模块到 60% / 80% / 100% 时那片天空放一圈光波"))),
-      el("p", "sk-pop-p", "四条旋臂是四科，旋臂上的星座是章节，星座里的星是考点。每个考点的分＝分值 × 掌握度 × 记忆保持。每做完一道题（真题、习题、会话里的题、错题重做、讲题批改），就按这道题的难度给对应考点的星加分：难度分 5 档（基础 30% · 简单 50% · 中档 70% · 较难 85% · 压轴 100%），每档有掌握度上限。刚开始简单题也能加分；分越高，简单题加得越少，要更难的题才能继续涨，各档都做对过才能满。做错会往回掉一点（简单题做错掉得多）。只听讲解按「基础」档算。不复习会慢慢掉，最多掉到 60%。"),
+      el("p", "sk-pop-p", "四条旋臂是四科，旋臂上的星座是章节，星座里的星是考点。每个考点的分＝分值 × 掌握度 × 记忆保持。掌握度＝按这个考点历年真题的难度分布，估计你现在能拿到的得分率。每做完一道题（真题、习题、会话里的题、错题重做、讲题批改），先按你现在的水平算出这道题的预计做对率，再按「实际结果 − 预计」更新：有挑战的题做对涨得多，本来就会的题做对几乎不涨；简单题做错扣得多，太难的题做错几乎不扣。记录越多越稳，刚开始几道题变化最大。提示后做对算 0.6，计算失误 / 审题错误算 0.5。会话里的题是顺着讲解出的，做对按 0.7 计，刚错过就做对按 0.5 计；错过之后隔天再独立做对按 1.3 计（说明真学会了）。只听讲解不扣分，只算「听过」的起点。会话结算的题按半权重，和逐题记录重复的不再计；同一道题 3 天内重做只算 0.3 倍。不复习会慢慢掉，最多掉到 60%。"),
       el("div", "sk-pop-actions", btn("预览全部点亮", startPreview, "sk-btn sk-btn-primary"), btn("刷新数据", () => { closePop(); load(true); }, "sk-btn")),
       el("details", "sk-pop-adv",
         el("summary", null, "键盘和显示"),
@@ -1054,13 +1053,14 @@ export function mountScore(ctx, container, signal) {
           "降低透明度（面板换成实色，字更清楚）")),
       el("details", "sk-pop-adv",
         el("summary", null, "高级 · 题目难度"),
-        el("p", "sk-pop-p", `每道题库题的难度决定做对它能加多少分。不用先评：做到还没评过的题时（快练 / 模考交卷、会话里取题和记录、错题重做），AI 会在后台自动评；没评到之前按题型和位置估（选择 / 填空中档、解答题较难、每份卷子最后两道解答题压轴）。分数每次都按全部记录重算，所以晚评的题，以前的加分也会跟着更新。这个按钮是一次把整个题库评完（AI 选题时就能按难度挑题）：现在评过 ${fi.diffCount || 0} / ${fi.bankTotal || "?"} 道，每 30 道一次调用，可以中途停下、下次接着来。用的是「便宜」模型槽（设置 → 模型）。`),
-        el("div", "sk-pop-actions", btn(fi.diffCount ? `已评 ${fi.diffCount} 道 · 补评新题` : "用 AI 评定难度", async () => {
+        el("p", "sk-pop-p", `每道题的难度决定做对、做错它对分数的影响。难度按「全国考研考生在这道题上的预计得分率」分五档：基础 ≥80% · 简单 60–80% · 中档 40–60% · 较难 20–40% · 压轴 <20%（教育部考试中心衡量试题难度就用「平均得分 / 满分」）。做到还没评过的题时，AI 会在后台自动评；没评之前按题型和位置估。分数每次都按全部记录重算，所以重评之后以前的记录也会按新难度算。`),
+        el("p", "sk-pop-p", `现在：按新标准评过 ${fi.rate?.current || 0} 道，按旧标准评的 ${fi.rate?.old || 0} 道（重评前继续用旧结果），一共 ${fi.rate?.total || fi.bankTotal || "?"} 道。下面的按钮把没评过的和旧标准的都评一遍，每 30 道一次调用，可以中途停下、下次接着来；用的是「便宜」模型槽（设置 → 模型）。`),
+        el("div", "sk-pop-actions", btn(fi.rate?.old ? `按新标准重评 ${fi.rate.old + Math.max(0, (fi.rate.total || 0) - fi.rate.current - fi.rate.old)} 道` : "补评没评过的题", async () => {
           try {
             const job = await ctx.call("score.rate", {});
             const msg = el("p", "sk-pop-p", "开始…"); reset(out, msg);
             const r = await waitJob(ctx, job, (j) => { msg.textContent = `${j.message || "评定中"}${j.total ? `（${j.done}/${j.total}）` : ""}`; });
-            reset(out, el("p", "sk-pop-p", `完成：${r.rated}/${r.total} 道已评。`)); load(true);
+            reset(out, el("p", "sk-pop-p", `完成：按新标准评过 ${r.current} / ${r.total} 道${r.old ? `，还有 ${r.old} 道没评上（可以再点一次）` : ""}。`)); load(true);
           } catch (err) { reset(out, errorBox(err)); }
         }, "sk-btn")), out),
       classifyBox());

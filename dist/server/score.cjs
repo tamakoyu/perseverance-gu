@@ -2,15 +2,20 @@
 // 分数判断机：按「考点分值 × 掌握度 × 记忆保持」估算现在能考多少分，并预测考试那天。
 //
 // 掌握度来自证据，按时间顺序逐条回放（每次都从原始记录重算，不会越算越偏）。
-// 每道题（真题、习题、会话里出的题、错题重做、讲题批改）都带一个难度档 1–5（AI 判断），每档有上限：
-//   基础 30% · 简单 50% · 中档 70% · 较难 85% · 压轴 100%
-// 做对一题：掌握度向这一档的上限靠近一截（rate × 权重 × 作答质量 × (上限 − 当前)）。
-//   所以刚开始简单题也能加分；分越高，简单题加得越少（超过它那档上限就不加了），要更难的题才能继续涨；
-//   从易到难各档都做对过，才能到满。考点分值越大，每题加得越少（rate = 0.4 / (1 + 分值/8)）。
-// 做错一题：掌握度往下一档的上限回落一截——简单题做错说明基础不牢，扣得多；难题做错，在难题水平以下不扣。
-//   计算失误 / 审题错误这类粗心错，扣分减半。
-// 同一道题 3 天内重复做只算 0.3 倍；会话讲解（只听没做题）按「基础」档算。
-// 遗忘：每个考点有记忆稳定度 S（天），保持率 R = (1 + t / 9S)^-1（t=S 时 R=0.9）；
+//
+// 能力模型（IRT / Elo 一类的贝叶斯更新）：
+//   每个考点有一个能力估计 θ 和它的不确定度 v；每道题按难度档 1–5 有难度 b = −2…2。
+//   做题前先算「按现在的能力，这题做对的概率」P = σ(θ − b)，做完按「实际结果 − P」更新：
+//     θ += v' × 权重 × (结果 − P)，v' = 1 / (1/v + 权重 × P(1−P))。
+//   意料之中的结果几乎不动（会的简单题做对、太难的题做错），意外的结果动得多（难题做对、简单题做错）；
+//   记录越多 v 越小、越稳，隔一段时间不练 v 回升。
+// 掌握度 = 按这个考点历年真题的难度分布加权的预计得分率（从「完全没学」的起点归一到 0–100%）。
+//   所以「满」＝ 稳定做对这个考点真题实际考的难度，不需要每个考点都有压轴题。
+// 作答结果：做对 1 · 提示后做对 0.6 · 部分对＝得分比 · 计算失误 / 审题错误 0.5 · 做错 0。
+// 讲解（只听没做题）不是作答证据：只把能力抬到「听过」的起点（不叠加），永远不会扣分。
+// 会话结算按题记、半权重；和逐题记录重复的题不再计。同一道题 3 天内重做只算 0.3 倍。
+// 广度：考点下的知识点没做对过的，按比整体能力低一档估（按真题频率加权）。
+// 遗忘：每个考点有记忆稳定度 S（天），保持率 R = (1 + t / 9S)^-1；
 //   分数 = 分值 × 掌握度 × (0.6 + 0.4R)，学会的东西最多掉到 60%（重新捡起来很快）。
 //   难度越高的题做对，S 起点越长；隔开复习成功一次 S 变成约 1.6–2.6 倍。
 const { uid, nowIso, today, str, fail } = require("./util.cjs");
@@ -20,22 +25,37 @@ const { weights } = require("./question-knowledge.cjs");
 const { itemsOfPoint } = require("./outline.cjs");
 const vocablist = require("./vocablist.cjs");
 const { retention } = require("./momo.cjs");
+const DIFF = require("./difficulty.cjs");
 
 const DAY = 86400000;
-const TIERS = [null,
-  { d: 1, name: "基础", cap: 0.3, S0: 8, desc: "直接套定义或公式，一两步就出结果" },
-  { d: 2, name: "简单", cap: 0.5, S0: 12, desc: "常规变形，两三步，方法一眼能看出" },
-  { d: 3, name: "中档", cap: 0.7, S0: 20, desc: "考研选择 / 填空的常见难度，有一个陷阱或要选对方法" },
-  { d: 4, name: "较难", cap: 0.85, S0: 28, desc: "真题解答题，综合两三个考点、步骤较长" },
-  { d: 5, name: "压轴", cap: 1, S0: 35, desc: "真题压轴 / 难题，需要构造或较深的思路" },
-];
+const TIERS = [null, ...DIFF.LEVELS.map((l, i) => ({ d: l.d, name: l.name, b: l.d - 3, S0: [8, 12, 20, 28, 35][i], desc: `预计得分率 ${l.rate}：${l.desc}` }))];
 const tierOf = (d) => TIERS[Math.max(1, Math.min(5, Math.round(Number(d) || 3)))];
 const KIND_LABEL = { taught: "讲解", practice: "练习", real: "真题" };
-const RATE_DOWN = 0.25;
-const SLIPS = new Set(["计算失误", "审题错误"]); // 粗心类错误：扣分减半
-const rateOf = (points) => 0.4 / (1 + (points || 0) / 8);
+const SLIPS = new Set(["计算失误", "审题错误"]); // 粗心类错误：方法会，结果记 0.5
+const SLIP_Q = 0.5;
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 const RESULT_Q = { 没懂: 0.1, 勉强: 0.4, 基本会: 0.75, 熟练: 1 };
+// 能力模型参数
+const TH0 = -2.5; // 完全没学：掌握度 0 的参照点
+const TH_START = -0.5; // 预测用的起点：一科还没有任何记录时假设的能力（简单题约 62%、中档题约 38%；按你的作答记录回测选的）
+const CRED_K = 1; // 证据量折扣：分数只算有做对的证据支持的部分，掌握度 × n / (n + CRED_K)，n＝这个考点按权重 × 结果累计的做对题数
+const TH_MIN = TH0 - 1; // 连错很多题也不再往下掉（再低没有意义，只会让后面爬不回来）
+const V0 = 1.0; // 起点的不确定度
+const V_MIN = 0.2; // 不确定度下限：记录再多，新的表现也还能动它
+const V_DRIFT = 0.01; // 不练时每天回升的不确定度
+const V_STEP = 0.08; // 每做一题先加一点不确定度：人是会进步的，老记录的分量要慢慢让位给新表现（模拟里跟踪进步最好的值）
+const TAUGHT_N = (q) => (q >= 0.7 ? 0.3 : q >= 0.35 ? 0.15 : 0); // 讲解：基本会 / 勉强 算多少「证据量」；没懂不算
+const TAUGHT_MAX = 0.4;
+const TAUGHT_S = 4; // 只听过讲解的记忆稳定度（天）：不跟着做题，很快就退回去
+const REPEAT_W = 0.3; // 同一道题 3 天内重做
+const SETTLE_W = 0.5; // 会话结算（AI 回看整段对话）的题按半权重
+const IN_SESSION_W = 0.7; // 会话里做对：题是老师刚讲完、顺着讲解出的，比独立做题容易，按 0.7 计
+const RIGHT_AFTER_W = 0.5; // 同一会话里这个考点刚错过（30 分钟内，期间老师一般刚讲完）就做对：多半靠短时记忆，按 0.5 计
+const RIGHT_AFTER_MS = 30 * 60000;
+const DELAYED_W = 1.3; // 以前在这个考点上错过、隔了至少一天再独立做对：说明真的学会了，按 1.3 计
+const SUGGEST_P = 0.75; // 建议难度：预计做对率低于这个的最低一档
+const DEFAULT_MIX = [0, 0.05, 0.25, 0.4, 0.2, 0.1]; // 没有真题统计时的难度分布
+const sig = (x) => 1 / (1 + Math.exp(-x));
 const FLOOR = 0.6;
 const DUE_R = 0.85;
 const Rf = (days, S) => (S > 0 ? 1 / (1 + Math.max(0, days) / (9 * S)) : 0);
@@ -99,13 +119,38 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
   const d15 = (x, dflt = 3) => { const n = Math.round(Number(x)); return n >= 1 && n <= 5 ? n : dflt; };
 
   // ── 证据收集 ──
+  // ── 同一道题的识别（不是题库题的：会话里出的题、错题、结算里的题）──
+  const normText = (t) => String(t || "").replace(/\$|\\[a-zA-Z]+|\s|[，。、,.:：;；()（）{}【】\[\]]/g, "");
+  const bigrams = (t) => { const s = normText(t); const b = new Set(); for (let i = 0; i < s.length - 1; i++) b.add(s.slice(i, i + 2)); return b; };
+  const jaccard = (a, b) => { if (!a.size || !b.size) return 0; let n = 0; for (const x of a) if (b.has(x)) n++; return n / (a.size + b.size - n); };
+  const SAME_Q = 0.45;
+
   function collect() {
     const f = frame();
     const dm = diffMap();
-    const obs = []; // {leaf, at(ms), kind, q, w, d, label, src, qid}
-    const push = (leaf, o) => { if (f.leaves.has(leaf)) obs.push({ leaf, ...o }); };
+    const obs = []; // {leaf, at(ms), kind, q, w, d, label, src, qid, pts}
+    // pooled：没对上具体考点、按章 / 模块 / 科目整体分摊的记录，只轻微影响能力估计，不算这个考点的「做对证据」
+    const push = (leaf, o) => { if (f.leaves.has(leaf)) obs.push({ leaf, ...o, pooled: /整体计/.test(o.note || "") }); };
     const inLeaf = (ids, leaf) => (ids || []).filter((id) => byId.get(id)?.leaf === leaf);
     const quality = (e) => (e.score != null && e.max ? Math.max(0, Math.min(1, e.score / e.max)) : e.correct === true ? 1 : e.correct === false ? 0 : null);
+    const mistakes = store.list("mistakes");
+    // 每个会话里已经逐题记录过的题干：同一会话里文字相近的记录算同一道题（重做按 3 天内重复计；结算里重复的直接不计）
+    const logged = new Map(); // chatId → [{big, qid}]
+    const keyOf = (chatId, text, fallback) => {
+      if (!chatId || !text) return fallback;
+      const big = bigrams(text);
+      if (big.size < 4) return fallback;
+      const list = logged.get(chatId) || [];
+      const hit = list.find((x) => jaccard(x.big, big) >= SAME_Q);
+      if (hit) return hit.qid;
+      list.push({ big, qid: fallback });
+      logged.set(chatId, list);
+      return fallback;
+    };
+    const seenLogged = (chatId, text) => { const big = bigrams(text); return big.size >= 4 && (logged.get(chatId) || []).some((x) => jaccard(x.big, big) >= SAME_Q); };
+    // 粗心错：题库题做错时，同一题、时间相近（1 天内）的错题标了计算失误 / 审题错误
+    const slipOf = (bankId, at) => mistakes.some((m) => m.bankId === bankId && SLIPS.has(m.errorType) && Math.abs(Date.parse(m.createdAt) - at) < DAY);
+
     // 1) 题库题：快练、模考、英语专项、会话里记录的原题、带题库 id 的错题与重做
     const { map } = progress.events();
     for (const [qid, evs] of map) {
@@ -119,15 +164,19 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
       const base = qDiff(q, dm);
       const testedAll = f.knowledge.get(qid)?.tested || [];
       for (const e of evs) {
-        const qv = quality(e);
+        let qv = quality(e);
         if (qv == null) continue;
         const at = Date.parse(e.at);
         if (!at) continue;
+        if (e.hinted && qv === 1) qv = 0.6;
+        const slip = qv === 0 && (SLIPS.has(e.errorType) || slipOf(qid, at));
+        if (slip) qv = SLIP_Q;
+        if (e.chatId) keyOf(e.chatId, q.stem, qid); // 让同会话里改编 / 抄写的同一道题对得上
         const d = d15(e.difficulty, base);
         const ids = validPointIds(e.pointIds, q.subject);
         const assessed = weights(ids);
         const used = ids.length ? ids : testedAll;
-        for (const h of assessed.length ? assessed : hits) push(h.id, { at, kind, q: e.hinted && qv === 1 ? 0.6 : qv, w: h.w, d, qid, pts: inLeaf(used, h.id), label: `${q.paper || "题库"}${q.number ? ` 第${q.number}题` : ""}`, src: e.source || "练习", note: pooled });
+        for (const h of assessed.length ? assessed : hits) push(h.id, { at, kind, q: qv, w: h.w, d, qid, sess: e.chatId || null, pts: inLeaf(used, h.id), label: `${q.paper || "题库"}${q.number ? ` 第${q.number}题` : ""}`, src: e.source || "练习", note: [pooled, slip ? "粗心错，按 0.5 计" : ""].filter(Boolean).join("；") });
       }
     }
     // 旧版结算（v<2）的练习评估里已经包含了那次会话的错题，避免重复计入
@@ -135,35 +184,40 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
     const textHits = (subject, topic, body) => matchText(f, subject, topic, body);
     // 没对上具体考点、按章 / 模块 / 科目整体计的，在证据里注明
     const poolNote = (hits, note = "") => { const h = hits[0]; const p = h && h.level && h.level !== "leaf" ? `没对上具体考点，按${{ chapter: "章", module: "模块", subject: "科目" }[h.level]}「${h.pool}」整体计` : ""; return [p, note].filter(Boolean).join("；"); };
-    // 2) 不带题库 id 的错题（会话里出的题、讲题批改、手动录入）：记错题算一次做错，重做按结果
-    for (const m of store.list("mistakes")) {
-      if (m.bankId) continue;
-      const mIds = validPointIds(m.pointIds, m.subject);
-      const assessed = weights(mIds);
-      const hits = assessed.length ? assessed : textHits(m.subject, m.topic, m.question);
-      if (!hits.length) continue;
-      const label = `错题 · ${m.topic}`;
-      const d = d15(m.difficulty);
-      const qid = `m:${m.id}`;
-      if (!(m.chatId && oldSettled.has(m.chatId))) {
-        const at = Date.parse(m.createdAt);
-        if (at) for (const h of hits) push(h.id, { at, kind: "practice", q: 0, w: h.w, d, qid, pts: inLeaf(mIds, h.id), label, src: m.source || "错题本", soft: SLIPS.has(m.errorType), note: poolNote(hits) });
+    // 2)+3) 不带题库 id 的错题与会话里逐题记录的题，按时间先后识别同一道题
+    const loose = [];
+    for (const m of mistakes) if (!m.bankId) loose.push({ type: "mistake", at: Date.parse(m.createdAt) || 0, m });
+    for (const r of store.list("qlog")) loose.push({ type: "qlog", at: Date.parse(r.at) || 0, r });
+    loose.sort((a, b) => a.at - b.at);
+    for (const x of loose) {
+      if (x.type === "mistake") {
+        const m = x.m;
+        const mIds = validPointIds(m.pointIds, m.subject);
+        const assessed = weights(mIds);
+        const hits = assessed.length ? assessed : textHits(m.subject, m.topic, m.question);
+        if (!hits.length) continue;
+        const label = `错题 · ${m.topic}`;
+        const d = d15(m.difficulty);
+        const qid = keyOf(m.chatId, m.question, `m:${m.id}`);
+        const slip = SLIPS.has(m.errorType);
+        if (!(m.chatId && oldSettled.has(m.chatId)) && x.at) {
+          for (const h of hits) push(h.id, { at: x.at, kind: "practice", q: slip ? SLIP_Q : 0, w: h.w, d, qid, sess: m.chatId || null, pts: inLeaf(mIds, h.id), label, src: m.source || "错题本", note: poolNote(hits, slip ? "粗心错，按 0.5 计" : "") });
+        }
+        for (const h of m.history || []) {
+          const at = Date.parse(h.at);
+          const qv = h.correct === true ? 1 : h.correct === false ? 0 : h.rating ? (h.rating >= 3 ? 1 : h.rating === 2 ? 0.5 : 0) : null;
+          if (!at || qv == null) continue;
+          for (const hh of hits) push(hh.id, { at, kind: "practice", q: qv, w: hh.w, d, qid, pts: inLeaf(mIds, hh.id), label: `${label}（重做）`, src: "错题重做", note: poolNote(hits) });
+        }
+      } else {
+        const r = x.r;
+        const rIds = validPointIds(r.pointIds, r.subject);
+        const assessed = weights(rIds);
+        const hits = assessed.length ? assessed : textHits(r.subject, r.topic, r.question);
+        if (!x.at || !hits.length) continue;
+        const qid = keyOf(r.chatId, r.question, `r:${r.id}`);
+        for (const h of hits) push(h.id, { at: x.at, kind: "practice", q: r.q, w: h.w, d: d15(r.difficulty), qid, sess: r.chatId || null, pts: inLeaf(rIds, h.id), label: r.topic, src: r.src || "会话", note: poolNote(hits, r.note || "") });
       }
-      for (const h of m.history || []) {
-        const at = Date.parse(h.at);
-        const qv = h.correct === true ? 1 : h.correct === false ? 0 : h.rating ? (h.rating >= 3 ? 1 : h.rating === 2 ? 0.5 : 0) : null;
-        if (!at || qv == null) continue;
-        for (const x of hits) push(x.id, { at, kind: "practice", q: qv, w: x.w, d, qid, pts: inLeaf(mIds, x.id), label: `${label}（重做）`, src: "错题重做", note: poolNote(hits) });
-      }
-    }
-    // 3) 会话里逐题记录的题（kaoyan_record_question：答对 / 提示后对 / 部分对）
-    for (const r of store.list("qlog")) {
-      const at = Date.parse(r.at);
-      const rIds = validPointIds(r.pointIds, r.subject);
-      const assessed = weights(rIds);
-      const hits = assessed.length ? assessed : textHits(r.subject, r.topic, r.question);
-      if (!at || !hits.length) continue;
-      for (const h of hits) push(h.id, { at, kind: "practice", q: r.q, w: h.w, d: d15(r.difficulty), pts: inLeaf(rIds, h.id), label: r.topic, src: r.src || "会话", note: poolNote(hits, r.note || "") });
     }
     // 4) 讲题批改里做对的题（做错的已经进了错题本）
     for (const rev of store.list("reviews")) {
@@ -173,15 +227,28 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
         if (!it.correct) continue;
         const hits = textHits(rev.subject, it.topic, "");
         const qv = it.score != null && it.fullScore ? Math.max(0, Math.min(1, it.score / it.fullScore)) : 1;
-        for (const h of hits) push(h.id, { at, kind: "practice", q: qv, w: h.w, d: d15(it.difficulty), label: `${rev.title || "讲题"} 第${it.number}题`, src: "讲题批改", note: poolNote(hits) });
+        for (const h of hits) push(h.id, { at, kind: "practice", q: qv, w: h.w, d: d15(it.difficulty), qid: `rv:${rev.id || rev.chatId}:${it.number}`, label: `${rev.title || "讲题"} 第${it.number}题`, src: "讲题批改", note: poolNote(hits) });
       }
     }
-    // 5) 会话结算：讲解按「基础」档；没有逐题记录的练习按结算给的难度档
+    // 5) 会话结算（AI 回看整段对话）：讲解只抬起点；练习按题、半权重；和逐题记录重复的题不计
     for (const s of settlements()) {
       const at = Date.parse(s.at);
+      if (!at) continue;
       for (const it of s.items || []) {
-        const practice = it.kind === "practice";
-        push(it.leaf, { at, kind: practice ? "practice" : "taught", q: it.q, w: practice ? Math.min(2, 1 + 0.3 * (it.n || 0)) : 1, d: practice ? d15(it.level, 2) : 1, label: s.title || "学习会话", src: practice ? "会话练习" : "会话讲解", note: it.note, chatId: s.chatId });
+        if (it.kind !== "practice") {
+          push(it.leaf, { at, kind: "taught", q: it.q, w: 1, d: 1, label: s.title || "学习会话", src: "会话讲解", note: it.note, chatId: s.chatId });
+          continue;
+        }
+        if (Array.isArray(it.questions)) {
+          it.questions.forEach((x, i) => {
+            if (s.chatId && seenLogged(s.chatId, x.text)) return; // 已经逐题记录过
+            push(it.leaf, { at: at + i, kind: "practice", q: x.q, w: SETTLE_W, d: d15(x.d), qid: `s:${s.chatId}:${it.leaf}:${i}`, label: `${s.title || "学习会话"}${x.text ? ` · ${x.text}` : ""}`, src: "会话练习", note: it.note, chatId: s.chatId });
+          });
+        } else {
+          // 旧版结算只有整体评价：一条记录，做对的按它给的档，做错的按中档
+          const d = it.q >= 0.6 ? d15(it.level, 2) : 3;
+          push(it.leaf, { at, kind: "practice", q: it.q, w: SETTLE_W * Math.min(2, 1 + 0.3 * (it.n || 0)), d, qid: `s:${s.chatId}:${it.leaf}`, label: s.title || "学习会话", src: "会话练习", note: it.note, chatId: s.chatId });
+        }
       }
     }
     obs.sort((a, b) => a.at - b.at);
@@ -195,47 +262,166 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
     return f.matcher.text(s, topic, body);
   }
 
+  // ── 能力模型 ──
+  /** 每个考点历年真题的难度分布（按归类权重计；题少时向章、科目的分布收缩）。 */
+  let mixCache = null;
+  function examMix() {
+    const f = frame();
+    const dm = diffMap();
+    const key = `${f.sig}|${Object.keys(dm).length}`;
+    if (mixCache?.sig === key) return mixCache.map;
+    const leafC = new Map(), chC = new Map(), subC = new Map();
+    const add = (m, k, d, w) => { if (!m.has(k)) m.set(k, [0, 0, 0, 0, 0, 0]); m.get(k)[d] += w; };
+    for (const q of f.qMap.values()) {
+      if (!isReal(q)) continue;
+      const hits = f.mapQ(q).filter((h) => !h.level || h.level === "leaf");
+      if (!hits.length) continue;
+      const d = qDiff(q, dm);
+      for (const h of hits) {
+        const l = f.leaves.get(h.id);
+        if (!l) continue;
+        add(leafC, h.id, d, h.w);
+        add(chC, `${l.subject}/${l.module}/${l.chapter}`, d, h.w);
+        add(subC, l.subject, d, h.w);
+      }
+    }
+    const shrink = (c, prior, k) => { const n = c ? c.reduce((a, b) => a + b, 0) : 0; return prior.map((p, d) => (d ? ((c ? c[d] : 0) + k * p) / (n + k) : 0)); };
+    const map = new Map();
+    for (const l of f.leaves.values()) {
+      if (l.kind === "vocab") continue;
+      const sub = shrink(subC.get(l.subject), DEFAULT_MIX, 2);
+      const ch = shrink(chC.get(`${l.subject}/${l.module}/${l.chapter}`), sub, 3);
+      const mix = shrink(leafC.get(l.id), ch, 3);
+      const P0 = pExam(TH0, mix);
+      map.set(l.id, { mix, P0, n: (leafC.get(l.id) || []).reduce((a, b) => a + b, 0) });
+    }
+    mixCache = { sig: key, map };
+    return map;
+  }
+  const pExam = (th, mix) => { let p = 0; for (let d = 1; d <= 5; d++) p += mix[d] * sig(th - TIERS[d].b); return p; };
+  /** 能力 → 掌握度（0 = 完全没学的起点，1 = 这个考点的真题全能做对）。 */
+  const masteryOf = (th, model) => clamp01((pExam(th, model.mix) - model.P0) / (1 - model.P0));
+  /** 掌握度 → 能力（二分）。 */
+  function thetaOf(m, model) {
+    if (m <= 0) return TH0;
+    let lo = TH_MIN, hi = 12;
+    for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (masteryOf(mid, model) < m) lo = mid; else hi = mid; }
+    return (lo + hi) / 2;
+  }
+  /** 广度：知识点没做对过的按低一档的能力估，按真题频率加权；有知识点信息的记录越多，这一项占比越足。 */
+  function breadthOf(st, leafId) {
+    const pts = (pointsByLeaf.get(leafId) || []).filter((p) => !p.name.includes("待核"));
+    if (!pts.length || !st.ptsObs) return 0;
+    const freq = pointFreq();
+    let all = 0, unc = 0;
+    for (const p of pts) { const w = 1 + (freq.get(p.id) || 0); all += w; if (!st.covered.has(p.id)) unc += w; }
+    return (unc / all) * Math.min(1, st.ptsObs / pts.length);
+  }
+  const massOf = (st, model, leafId) => {
+    const u = breadthOf(st, leafId);
+    const m = masteryOf(st.th, model);
+    const b = u ? (1 - u) * m + u * masteryOf(st.th - 1, model) : m;
+    return b * (st.nEff / (st.nEff + CRED_K));
+  };
+
+  /**
+   * 起点借用：一个考点第一次有记录时，能力起点不是「完全没学」，而是同一章（没有就同一科）在这之前表现出来的平均能力。
+   * 章 / 科的平均能力用同样的更新规则、按时间顺序跑一遍所有作答得到（只用这个考点第一条记录之前的数据）。
+   * 没有记录的考点仍显示 0（没有证据就不给分）。
+   */
+  function priorsOf(obs, at) {
+    const pools = new Map();
+    const pool = (k) => { if (!pools.has(k)) pools.set(k, { th: TH_START, v: V0, n: 0 }); return pools.get(k); };
+    const f = frame();
+    const priors = new Map();
+    for (const o of obs) {
+      if (o.at > at) break;
+      const l = f.leaves.get(o.leaf);
+      if (!l) continue;
+      const sk = l.subject, ck = `${l.subject}/${l.module}/${l.chapter}`;
+      if (!priors.has(o.leaf)) {
+        const c = pools.get(ck), s0 = pools.get(sk);
+        priors.set(o.leaf, c?.n ? c.th : s0?.n ? s0.th : TH_START);
+      }
+      if (o.kind === "taught" || o.w < 0.2) continue; // 讲解不是作答；按章 / 科目整体计的小份额不进平均
+      for (const p of [pool(sk), pool(ck)]) {
+        const P = sig(p.th - tierOf(o.d).b);
+        p.v = Math.min(V0, p.v + V_STEP * o.w);
+        const v2 = 1 / (1 / p.v + o.w * P * (1 - P));
+        p.th = Math.max(TH_MIN, p.th + v2 * o.w * (o.q - P));
+        p.v = Math.max(V_MIN, v2);
+        p.n++;
+      }
+    }
+    return priors;
+  }
+
   /** 回放一个考点的证据，得到 at 时刻的状态。 */
-  // 广度：考点下有 size 个知识点。某道题只练到已经做对过的知识点、而这个考点还有没做对过的知识点时，加分减半，
-  // 避免反复刷同一个小点就把整颗星点满。没有知识点信息的旧记录不受影响。
-  const REPEAT_POINT = 0.5;
-  function replay(list, at, points, size = 0) {
-    const st = { m: 0, S: 0, last: null, n: 0, real: 0, top: 0, evidence: [], covered: new Set() };
-    const rate = rateOf(points);
+  function replay(list, at, points, leafId, prior = null) {
+    const model = examMix().get(leafId) || { mix: DEFAULT_MIX, P0: pExam(TH0, DEFAULT_MIX) };
+    const st = { th: prior ?? TH_START, v: V0, m: 0, S: 0, last: null, n: 0, nEff: 0, taught: 0, real: 0, top: 0, evidence: [], covered: new Set(), ptsObs: 0, lastMiss: new Map(), missed: false, own: 0 };
     const seen = new Map();
     for (const o of list) {
       if (o.at > at) break;
       const T = tierOf(o.d);
       const elapsed = st.last ? (o.at - st.last) / DAY : 0;
       const R = st.last ? Rf(elapsed, st.S) : 1;
-      const cur = st.m * (st.last ? keep(R) : 1);
-      let w = Math.max(0.005, Math.min(2, o.w)); // 按章 / 模块整体计时每个考点只分到一小份，下限不能高，否则摊开后总量被放大
+      const before = st.m;
+      // 遗忘：掌握度按保持率掉下来，能力跟着回到对应的位置；不确定度随不练的天数回升
+      if (st.last && R < 1) { st.th = Math.min(st.th, thetaOf(masteryOf(st.th, model) * keep(R), model)); st.v = Math.min(V0, st.v + V_DRIFT * elapsed); }
+      const cur = st.last ? massOf(st, model, leafId) : 0;
+      let w = Math.max(0.005, Math.min(2, o.w)); // 按章 / 模块整体计时每个考点只分到一小份
+      let repeat = false;
+      let ctxNote = "";
+      if (o.kind !== "taught" && o.src !== "会话练习") { // 结算里的题已经按半权重计，不再折
+        if (o.q >= 0.6) {
+          const delayed = st.missed && st.last && elapsed >= 1;
+          const recent = o.sess ? st.lastMiss.get(o.sess) : null;
+          if (recent != null && o.at - recent < RIGHT_AFTER_MS) { w *= RIGHT_AFTER_W; ctxNote = `同一会话里刚错过就做对，按 ${RIGHT_AFTER_W} 计`; }
+          else if (delayed) { const k = o.sess ? IN_SESSION_W * DELAYED_W : DELAYED_W; w *= k; ctxNote = `错过之后隔天${o.sess ? "在会话里" : "独立"}做对，按 ${r2(k)} 计`; }
+          else if (o.sess) { w *= IN_SESSION_W; ctxNote = `会话里做对，按 ${IN_SESSION_W} 计`; }
+        } else if (!o.pooled) {
+          if (o.sess) st.lastMiss.set(o.sess, o.at);
+          st.missed = true;
+        }
+      }
       if (o.qid) {
         const prev = seen.get(o.qid);
-        if (prev != null && (o.at - prev) / DAY < 3) w *= 0.3; // 刚做过的题还记得答案
+        if (prev != null && (o.at - prev) / DAY < 3) { w *= REPEAT_W; repeat = true; } // 刚做过的题还记得答案
         seen.set(o.qid, o.at);
       }
-      const lower = T.d > 1 ? TIERS[T.d - 1].cap : 0;
-      let breadth = 1;
-      if (o.pts?.length && size && st.covered.size < size && o.pts.every((id) => st.covered.has(id))) breadth = REPEAT_POINT;
-      const up = Math.min(1, rate * w) * o.q * Math.max(0, T.cap - cur) * breadth;
-      const down = Math.min(1, RATE_DOWN * w) * (1 - o.q) * Math.max(0, cur - lower) * (o.soft ? 0.5 : 1);
-      const m = clamp01(cur + up - down);
-      if (o.q >= 0.6) {
-        for (const id of o.pts || []) st.covered.add(id);
-        if (!st.S) st.S = T.S0;
-        else {
-          const gain = elapsed >= 1 ? 1 + 2 * (1 - R) + 0.6 : 1.03;
-          st.S = Math.max(T.S0 * 0.8, st.S * gain);
-        }
-        if (o.q >= 0.8 && o.kind !== "taught" && T.d > st.top) st.top = T.d;
-      } else st.S = Math.max(3, (st.S || T.S0) * 0.5);
-      st.evidence.push({ at: new Date(o.at).toISOString(), kind: o.kind, d: T.d, tier: T.name, q: r2(o.q), label: o.label, src: o.src, note: [o.note, breadth < 1 ? `这个知识点已做对过，本考点还有 ${size - st.covered.size} 个知识点没做对，加分减半` : ""].filter(Boolean).join("；"), delta: r2((m - cur) * points), decay: r2((st.m - cur) * points) });
+      let P = null;
+      if (o.kind === "taught") {
+        // 讲解不是作答：不改能力估计，只给一点「听过」的证据量（最多累计 TAUGHT_MAX，不随讲解次数叠加）
+        const add = TAUGHT_N(o.q);
+        const room = Math.max(0, TAUGHT_MAX - st.taught);
+        st.taught += Math.min(add, room); st.nEff += Math.min(add, room);
+        if (!st.S) st.S = TAUGHT_S;
+      } else {
+        P = sig(st.th - T.b);
+        st.v = Math.min(V0, st.v + V_STEP * w);
+        const v2 = 1 / (1 / st.v + w * P * (1 - P));
+        st.th = Math.max(TH_MIN, st.th + v2 * w * (o.q - P));
+        st.v = Math.max(V_MIN, v2);
+        if (o.q >= 0.6) {
+          if (!st.S || st.S <= TAUGHT_S) st.S = T.S0;
+          else {
+            const gain = elapsed >= 1 ? 1 + 2 * (1 - R) + 0.6 : 1.03;
+            st.S = Math.max(T.S0 * 0.8, st.S * gain);
+          }
+          if (o.q >= 0.8 && T.d > st.top) st.top = T.d;
+        } else st.S = Math.max(3, (st.S || T.S0) * 0.5);
+        if (o.pts?.length) { st.ptsObs++; if (o.q >= 0.6) for (const id of o.pts) st.covered.add(id); }
+        if (!o.pooled) { st.nEff += w * o.q; st.own++; }
+      }
+      const m = massOf(st, model, leafId);
+      st.evidence.push({ at: new Date(o.at).toISOString(), kind: o.kind, d: T.d, tier: T.name, q: r2(o.q), p: P == null ? null : r2(P), label: o.label, src: o.src, note: [o.note, ctxNote, repeat ? "3 天内做过同一道题，按 0.3 倍计" : "", o.w < 1 && o.src === "会话练习" ? "会话结算按半权重计" : ""].filter(Boolean).join("；"), delta: r2((m - cur) * points), decay: r2((cur - before) * points) });
       st.m = m;
       st.last = o.at;
       st.n++;
       if (o.kind === "real") st.real++;
     }
+    st.model = model;
     return st;
   }
 
@@ -281,8 +467,6 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
     return { ...base, target: vocablist.WORDS.length, learned, basic: Object.values(bands).reduce((a, b) => a + b.basic, 0), effective: Math.round(effective), mastery: Math.min(1, mastery), bands, freqFromBank: vl.fromBank, freqPapers: vl.papers };
   }
 
-  const leafSize = (id) => (pointsByLeaf.get(id) || []).filter((p) => !p.name.includes("待核")).length;
-
   /** 某一时刻的全部分数（history=true 时只要总分）。 */
   function evaluate(at = Date.now(), { obs = collect(), vocab, detail = true } = {}) {
     const f = frame();
@@ -290,6 +474,7 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
     const target = Number(s.vocabTarget) || 5500;
     const byLeaf = new Map();
     for (const o of obs) { if (!byLeaf.has(o.leaf)) byLeaf.set(o.leaf, []); byLeaf.get(o.leaf).push(o); }
+    const priors = priorsOf(obs, at);
     const v = vocab || vocabNow(target, at);
     let total = 0;
     let varSum = 0;
@@ -312,13 +497,19 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
               view = { id: l.id, name: l.name, band: l.band, points: r2(pts), score: r2(sc), m: r2(m), now: r2(m), R: r2(m), vocab: { ...v, bands: undefined }, size: band?.size || 0, learnedN: band?.learned || 0, desc: band?.desc || "", basicN: band?.basic || 0, words: band?.weakest || [], todo: band?.todo || [], due: false, n: band?.learned || 0 };
               varSum += (pts * 0.05) ** 2;
             } else {
-              const st = replay(byLeaf.get(l.id) || [], at, l.points, leafSize(l.id));
+              const st = replay(byLeaf.get(l.id) || [], at, l.points, l.id, priors.get(l.id));
               const R = st.last ? Rf((at - st.last) / DAY, st.S) : 0;
               const mNow = st.m * (st.last ? keep(R) : 0);
               const sc = l.points * mNow;
-              const sigma = st.n ? 0.28 / Math.sqrt(st.n + st.real) : 0;
-              varSum += (l.points * sigma * Math.max(0.3, mNow)) ** 2;
-              view = { id: l.id, name: l.name, points: l.points, score: r2(sc), m: r2(st.m), now: r2(mNow), R: r2(R), S: r1(st.S), n: st.n, real: st.real, top: st.top, next: (TIERS.find((T) => T && T.cap > st.m + 0.03) || TIERS[5]).d, realCount: l.realCount || 0, last: st.last ? new Date(st.last).toISOString() : null };
+              // 不确定度：能力 ± 1 个标准差对应的掌握度区间
+              const sd = Math.sqrt(st.v);
+              const sigmaM = st.n ? (masteryOf(st.th + sd, st.model) - masteryOf(st.th - sd, st.model)) / 2 : 0;
+              varSum += (l.points * sigmaM) ** 2;
+              // 各档题现在的预计做对率（已算上遗忘）；建议难度＝做对率低于 75% 的最低一档
+              const thNow = st.last ? Math.min(st.th, thetaOf(masteryOf(st.th, st.model) * keep(R), st.model)) : st.th;
+              const pTier = TIERS.slice(1).map((T) => r2(sig(thNow - T.b)));
+              const next = (TIERS.slice(1).find((T) => sig(thNow - T.b) < SUGGEST_P) || TIERS[5]).d;
+              view = { id: l.id, name: l.name, points: l.points, score: r2(sc), m: r2(st.m), now: r2(mNow), R: r2(R), S: r1(st.S), n: st.n, own: st.own, real: st.real, top: st.top, next, pTier, mix: st.model.mix.slice(1).map(r2), sd: r2(sigmaM), realCount: l.realCount || 0, last: st.last ? new Date(st.last).toISOString() : null };
               if (st.last) {
                 view.due = st.m >= 0.15 && R < DUE_R;
                 // 保持率降到 85% 的日子：t = 9S(1/R - 1)
@@ -451,8 +642,8 @@ function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSetti
       history,
       review: review.slice(0, 20),
       reviewCount: review.length,
-      frameInfo: { mapped: f.stats.mapped, total: f.stats.total, fineReal: [...f.qMap.values()].filter((q) => ["数学", "408"].includes(q.subject) && isReal(q) && f.knowledge.get(q.id)?.tested.length).length, aiCount: f.aiCount, aiAt: f.aiAt, vocabPts, diffCount: Object.keys(diffMap()).length, bankTotal: f.qMap.size },
-      tiers: TIERS.slice(1).map((T) => ({ d: T.d, name: T.name, cap: T.cap, desc: T.desc })),
+      frameInfo: { rate: rateStatus(), mapped: f.stats.mapped, total: f.stats.total, fineReal: [...f.qMap.values()].filter((q) => ["数学", "408"].includes(q.subject) && isReal(q) && f.knowledge.get(q.id)?.tested.length).length, aiCount: f.aiCount, aiAt: f.aiAt, vocabPts, diffCount: Object.keys(diffMap()).length, bankTotal: f.qMap.size },
+      tiers: TIERS.slice(1).map((T) => ({ d: T.d, name: T.name, desc: T.desc })),
       settlements: settlements().slice(-30).reverse().map((x) => ({ chatId: x.chatId, at: x.at, title: x.title, by: x.by, items: (x.items || []).length })),
     };
   }
@@ -518,39 +709,44 @@ ${cat.text}
 
 规则：
 - 只评估这次会话里真正讲过或练过的考点；只是顺口提到的不算。一个知识点对应多个考点时，选最贴切的 1–2 个。
-- kind：只听了讲解、没有做题检验 → "taught"；做了检查题 / 练习题 → "practice"。
-- result（按学习者自己的作答表现判断，要保守，宁低勿高）：
-  "没懂"＝答错、需要老师反复讲；"勉强"＝错过后在提示下才做对，或只答对简单题；"基本会"＝独立做对了大部分题，偶有小错；"熟练"＝考研难度的题也能独立、完整、快速做对。
-  只有讲解、没有作答的考点，result 最多写"基本会"（按学习者的反馈和追问判断理解程度）。
-- n：这个考点学习者实际作答的题数（没做题写 0）。
-- 已经逐题记录过的题（记录里标着【已逐题记录…】或【讲题批改】的那些题）系统会单独计分，不要把它们算进来。只评估：讲解，以及没有逐题记录的练习。某个考点的题全都逐题记录过、又没有单独讲解，就不要列这个考点。
-- level：这个考点上学习者独立做对的题里最难的一档（1 基础：直接套定义或公式；2 简单：常规变形两三步；3 中档：考研选择 / 填空常见难度；4 较难：真题解答题、综合两三个点；5 压轴）。只有讲解时写 1。
-- note：一句话说明依据（例如「3 道检查题错 1 道，错在漏掉定义域」）。
-输出 JSON：{"items":[{"code":"K12","kind":"practice","result":"基本会","n":3,"level":3,"note":"…"}],"summary":"一两句话总结这次学了什么、哪里还弱"}`,
+- 已经逐题记录过的题（记录里标着【已逐题记录…】或【讲题批改】的那些题）系统会单独计分，**不要列进来**。只评估：讲解，以及没有逐题记录的练习题。
+- kind："taught"＝这个考点只听了讲解、没有作答；"practice"＝这个考点有学习者自己作答的题（列在 questions 里）。同一个考点既讲了又做了题，写 "practice"。
+- taught 的 result 按学习者的反馈和追问判断理解程度，只能是 "没懂" / "勉强" / "基本会"（没作答就不可能判断熟练）。
+- practice 的 questions：每道学习者作答过、又没有逐题记录的题一项：
+  text：题目要点（40 字以内，写清楚是哪道题，例如「求 lim(1+2x)^(1/x)」）；
+  difficulty：**这道题本身**的难度（不是学习者做到了哪一档）。${DIFF.RUBRIC_SHORT}；
+  result：「对」＝独立做对；「提示后对」＝给了提示才做对；「部分对」＝思路对但没做完或只对一部分；「粗心错」＝方法对、算错或看错题；「错」＝不会或方法错（包括回答"不知道"）。
+- note：一句话说明依据。
+输出 JSON：{"items":[{"code":"K12","kind":"taught","result":"基本会","note":"…"},{"code":"K3","kind":"practice","questions":[{"text":"…","difficulty":3,"result":"错"}],"note":"…"}],"summary":"一两句话总结这次学了什么、哪里还弱"}`,
       text: `会话标题：${record.title || "（无）"}\n\n${text}`,
-      maxTokens: 4000,
+      maxTokens: 8000,
       signal,
     });
     const items = [];
     const seen = new Set();
+    const PQ = { 对: 1, 提示后对: 0.6, 部分对: 0.5, 粗心错: SLIP_Q, 错: 0 };
     for (const it of res.items || []) {
       const leaf = cat.codes.get(String(it.code || "").trim().toUpperCase());
       if (!leaf || seen.has(leaf)) continue;
       seen.add(leaf);
-      const result = RESULT_Q[it.result] != null ? it.result : "勉强";
-      const kind = it.kind === "practice" && Number(it.n) > 0 ? "practice" : "taught";
-      items.push({ leaf, kind, result, q: RESULT_Q[result], n: Math.max(0, Math.min(50, Math.round(Number(it.n) || 0))), level: kind === "practice" ? d15(it.level, 2) : 1, note: str(String(it.note || ""), 300) });
+      const qs = (Array.isArray(it.questions) ? it.questions : []).slice(0, 30)
+        .map((x) => ({ text: str(String(x?.text || ""), 120), d: d15(x?.difficulty), result: PQ[x?.result] != null ? x.result : "错", q: PQ[x?.result] ?? 0 }));
+      if (it.kind === "practice" && qs.length) items.push({ leaf, kind: "practice", questions: qs, note: str(String(it.note || ""), 300) });
+      else {
+        const result = ["没懂", "勉强", "基本会"].includes(it.result) ? it.result : "勉强";
+        items.push({ leaf, kind: "taught", result, q: RESULT_Q[result], note: str(String(it.note || ""), 300) });
+      }
     }
     report?.(1, 2, "计算分数变化");
     const { impact } = measure(() => {
       const list = settlements().filter((x) => x.chatId !== chatId);
-      list.push({ id: uid(), v: 2, chatId, at: new Date(at).toISOString(), settledAt: nowIso(), by, title: str(record.title || "", 200), subject, items, summary: str(String(res.summary || ""), 1000) });
+      list.push({ id: uid(), v: 3, chatId, at: new Date(at).toISOString(), settledAt: nowIso(), by, title: str(record.title || "", 200), subject, items, summary: str(String(res.summary || ""), 1000) });
       store.saveList("settlements", list);
     });
     const f = frame();
     return {
       chatId, title: record.title || "", summary: res.summary || "",
-      items: items.map((x) => ({ ...x, name: f.leaves.get(x.leaf)?.name, chapter: f.leaves.get(x.leaf)?.chapter, subject: f.leaves.get(x.leaf)?.subject })),
+      items: items.map((x) => ({ ...x, result: x.kind === "practice" ? `${x.questions.length} 题·对 ${x.questions.filter((q) => q.q >= 0.8).length}` : x.result, name: f.leaves.get(x.leaf)?.name, chapter: f.leaves.get(x.leaf)?.chapter, subject: f.leaves.get(x.leaf)?.subject })),
       impact,
     };
   }
@@ -711,7 +907,6 @@ ${cat.text}
   }
 
   // ── AI 评定题库题目难度（一次性，可续跑；以后导入的新题点一下补评） ──
-  const TIER_RUBRIC = TIERS.slice(1).map((T) => `${T.d} ${T.name}：${T.desc}`).join("\n");
   /** 给一批题评难度，每 30 道一次调用，评完一批就存一批（中途停下不丢）。 */
   async function rateList(todo, { report, signal } = {}) {
     const total = todo.length;
@@ -726,9 +921,9 @@ ${cat.text}
       let res;
       try {
         res = await llm.json({
-        system: `你是考研命题老师。按考研考生的视角给每道题评难度档（1–5）：
-${TIER_RUBRIC}
-参考：同一份真题卷里越靠后的解答题通常越难；选择 / 填空多数是 2–3，个别陷阱多或计算量大的到 4；解答题多数 3–4，压轴小问 5；英语阅读按推理深度和干扰项强度判断。输出 JSON：{"items":[{"i":题目序号,"d":难度}]}`,
+        system: `你是考研命题老师。给每道题评难度档（1–5）。
+${DIFF.RUBRIC_FULL}
+输出 JSON：{"items":[{"i":题目序号,"d":难度}]}`,
         text: batch.map((q, j) => `#${j} ${q.subject} ${q.paper || q.source || ""} 第${q.number}题（${q.type}${q.part ? `·${q.part}` : ""}，${q.score || "?"}分）考点：${(q.topics || []).join("、") || "无"}\n${String(q.stem || "").replace(/\s+/g, " ").slice(0, 350)}${q.options?.length ? `\n选项：${q.options.map((o) => `${o.key}. ${String(o.text).slice(0, 60)}`).join("  ")}` : ""}`).join("\n\n"),
         maxTokens: 32000,
         slot: "cheap",
@@ -746,23 +941,32 @@ ${TIER_RUBRIC}
       // 重新读一次再写：后台评定和按钮评定可能同时在跑
       const cur = store.value("difficulty", { map: {}, at: null });
       const map = { ...(cur.map || {}) };
+      const ver = { ...(cur.ver || {}) };
       for (const it of res.items || []) {
         const q = batch[Number(it.i)];
         const d = Math.round(Number(it.d));
-        if (q && d >= 1 && d <= 5) map[q.id] = d;
+        if (q && d >= 1 && d <= 5) { map[q.id] = d; ver[q.id] = DIFF.RUBRIC_VER; }
       }
-      store.saveValue("difficulty", { ...cur, map });
+      store.saveValue("difficulty", { ...cur, map, ver });
       done += batch.length;
     }
   }
+  /** 按旧标准评过、还没按现在的标准重评的题。 */
+  const outdated = (q, cur) => !!cur.map?.[q.id] && (cur.ver?.[q.id] || 1) < DIFF.RUBRIC_VER;
+  function rateStatus() {
+    const cur = store.value("difficulty", { map: {}, at: null });
+    const qs = bank.all().filter((q) => ["数学", "408", "英语", "政治"].includes(q.subject));
+    return { total: qs.length, current: qs.filter((q) => cur.map?.[q.id] && !outdated(q, cur)).length, old: qs.filter((q) => outdated(q, cur)).length, ver: DIFF.RUBRIC_VER };
+  }
   async function rateBank({ progress: report, signal, force = false }) {
     if (force) store.saveValue("difficulty", { map: {}, at: null });
-    const map = diffMap();
-    const todo = bank.all().filter((q) => ["数学", "408", "英语", "政治"].includes(q.subject) && !map[q.id]);
+    const cur0 = store.value("difficulty", { map: {}, at: null });
+    // 没评过的、按旧标准评的都评（旧标准的结果在重评前继续用）
+    const todo = bank.all().filter((q) => ["数学", "408", "英语", "政治"].includes(q.subject) && (!cur0.map?.[q.id] || outdated(q, cur0)));
     await rateList(todo, { report, signal });
     const cur = store.value("difficulty", { map: {}, at: null });
     store.saveValue("difficulty", { ...cur, at: nowIso() });
-    return { rated: Object.keys(cur.map || {}).length, total: bank.all().length };
+    return { rated: Object.keys(cur.map || {}).length, total: bank.all().length, ...rateStatus() };
   }
 
   // 做到还没评过的题时，在后台顺手评（不用先把整个题库评一遍）。分数每次都从原始记录重算，所以晚评的题，以前的加分也会跟着更新。
@@ -902,16 +1106,16 @@ ${TIER_RUBRIC}
         return { id: l.id, name: l.name, points: l.points || 0, m, n: v.n || 0, due: !!v.due, top: v.top || 0, next: v.next || 1, st, priority: (l.points || 0) * (1 - m) };
       }).sort((a, b) => b.priority - a.priority);
       out.push("", `## ${c.subject === "数学" ? "数学一" : c.subject} · ${c.module} · ${c.chapter}`);
-      out.push("考点｜近15年题数｜近15年分值｜常见题型｜预测分里的分值｜你的掌握｜做对过的最难档｜要继续涨需要的难度｜优先级");
+      out.push("考点｜近15年题数｜近15年分值｜常见题型｜预测分里的分值｜你的掌握｜做对过的最难档｜建议难度｜优先级");
       for (const r of rows) {
         const types = Object.entries(r.st.types).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t, n]) => `${t}${Math.round(n * 10) / 10}`).join(" ") || "—";
         const rare = r.st.recent < 1.5 ? (r.st.recent < 0.5 ? "（当前频率表未命中）" : "（少考）") : "";
-        out.push(`- ${r.name}${rare}｜${r.st.recent.toFixed(1)}｜${Math.round(r.st.pts)}｜${types}｜${r.points.toFixed(1)}｜${r.n ? pct(r.m) : "没有记录"}${r.due ? "·该复习" : ""}｜${r.top ? `${r.top} ${TIERS[r.top].name}` : "—"}｜${r.next} ${TIERS[r.next].name}及以上｜${r.priority.toFixed(1)}`);
+        out.push(`- ${r.name}${rare}｜${r.st.recent.toFixed(1)}｜${Math.round(r.st.pts)}｜${types}｜${r.points.toFixed(1)}｜${r.n ? pct(r.m) : "没有记录"}${r.due ? "·该复习" : ""}｜${r.top ? `${r.top} ${TIERS[r.top].name}` : "—"}｜${r.next} ${TIERS[r.next].name}｜${r.priority.toFixed(1)}`);
         for (const q of r.st.qs.slice(0, 3)) out.push(`    · id=${q.id} ${q.paper || q.year || ""} 第${q.number}题（${q.type}·难度${qDiff(q)}·${doneTag(q)}）${String(q.stem || "").replace(/\s+/g, " ").slice(0, 90)}`);
         leaves.push(r);
       }
     }
-    out.push("", `难度档：${TIERS.slice(1).map((T) => `${T.d} ${T.name}（掌握度上限 ${Math.round(T.cap * 100)}%）`).join("、")}。掌握度已经超过某档上限，再做这一档的题几乎不加分，出题要用「要继续涨需要的难度」及以上的题。`);
+    out.push("", `难度档：${TIERS.slice(1).map((T) => `${T.d} ${T.name}`).join("、")}。掌握＝按这个考点历年真题的难度分布估计的得分率。「建议难度」＝按学习者现在的能力、预计做对率低于 75% 的最低一档：出这一档（或高一档）的题最能测出和提升水平；比它低的题做对几乎不加分，做错却会扣得多。`);
     out.push("", "用法：复习会话按优先级（分值 ×（1 − 掌握））从高到低排节点；重点复习优先高频，按考纲查漏时也保留低频必考范围。上面列的真题可以直接用 kaoyan_bank_get 取来当原型。");
     return { text: out.join("\n"), leaves, pending, coverage: coverageList(leaves.map((l) => l.id)) };
   }
@@ -973,7 +1177,7 @@ ${TIER_RUBRIC}
     const f = frame();
     return [...f.qMap.values()].filter((q) => ["数学", "408"].includes(q.subject) && !f.mapQ(q).length).map((q) => q.id);
   }
-  return { frame, invalidateFrame: () => { frameCache = null; statCache = null; }, overview, evaluate, measure, diff, settle, unsettled, classifyBank, questionsOf, collect, focus, rateBank, queueRate, queueClassify, classifyStatus, recordQuestion, unmappedIds, coverageList, pointFreq, TIERS, qDiff };
+  return { frame, invalidateFrame: () => { frameCache = null; statCache = null; }, overview, evaluate, measure, diff, settle, unsettled, classifyBank, questionsOf, collect, focus, rateBank, rateStatus, queueRate, queueClassify, classifyStatus, recordQuestion, unmappedIds, coverageList, pointFreq, TIERS, qDiff };
 }
 
 module.exports = { createScore };

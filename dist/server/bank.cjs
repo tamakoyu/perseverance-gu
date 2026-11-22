@@ -2,6 +2,7 @@
 // 题库：导入（文字 / 图片 / PDF OCR）、组卷、判分、错题诊断。
 const fs = require("node:fs");
 const { fail, uid, nowIso } = require("./util.cjs");
+const DIFF = require("./difficulty.cjs");
 
 const SUBJECTS = ["数学", "408", "英语", "政治"];
 const CHOICE_TYPES = ["单选", "多选", "完形", "阅读", "新题型"];
@@ -34,7 +35,7 @@ const EXTRACT_SYSTEM = `你是考研试卷录入员。输入是一份试卷（�
 - hasFigure：题目里有「[图：…]」时为 true，并保留图的文字描述在 stem 里。page：这道题开始所在的页码（数字）。
 - 英语阅读/完形/新题型：每道小题单独一项；同一篇文章用相同的 materialKey（如 "Text1"），文章原文放在该篇第一道小题的 material 字段，其余小题 material 留空。
 - topics：1–3 个考点名（中文，如「反常积分」「二叉树的遍历」「细节题」）。
-- difficulty：按考研考生视角给这道题评难度档（整数 1–5）：1 基础＝直接套定义或公式，一两步；2 简单＝常规变形两三步；3 中档＝考研选择 / 填空常见难度，有一个陷阱或要选对方法；4 较难＝真题解答题、综合两三个考点；5 压轴＝需要构造或较深的思路。题目旁印了「【难度★…】」的，以星级为主要参考（★→1–2，★★→2，★★★→3，★★★★ 及以上→4），再结合题目本身调整。【难度…】这一行不要放进 stem。
+- difficulty：给这道题评难度档（整数 1–5）。${DIFF.RUBRIC_SHORT}。题目旁印了「【难度★…】」的，以星级为主要参考（★→1–2，★★→2，★★★→3，★★★★ 及以上→4），再结合题目本身调整。【难度…】这一行不要放进 stem。
 - 1987–1996 年的老数学卷分「试卷 I」和「试卷 II」（试卷 II 是另一类考生做的，大多写着「同试卷 I 第X题」）：**只录入试卷 I 的题**，「(试卷 II)」标题之后的内容全部跳过，不要输出。答案册里试卷 II 的答案也跳过。
 - 段首如果是某道题的后半截、你看不到它的题号，直接忽略（它会在相邻段里完整出现）；段尾不完整的题也照样输出，能写多少写多少。
 - 如果这份内容只有答案和解析（答案册），只输出 answers：[{"number":"1","answer":"…","analysis":"…"}]。
@@ -209,7 +210,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     store.saveList("bank", items);
     if (Object.keys(rated).length) {
       const cur = store.value("difficulty", { map: {}, at: null });
-      store.saveValue("difficulty", { ...cur, map: { ...(cur.map || {}), ...rated } });
+      store.saveValue("difficulty", { ...cur, map: { ...(cur.map || {}), ...rated }, ver: { ...(cur.ver || {}), ...Object.fromEntries(Object.keys(rated).map((id) => [id, DIFF.RUBRIC_VER])) } });
     }
     const applied = applyAnswers(meta, merged.answers);
     if (meta.subject === "408" && meta.source === "真题" && meta.year) {
@@ -508,7 +509,11 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
 
   function numKey(n) { const m = String(n).match(/\d+/); return m ? Number(m[0]) : 9999; }
 
-  function select({ mode, subject, types = [], topic = "", years = [], paper, count = 10, includeAi = true }) {
+  /**
+   * 组卷。pick：prefer = 没做过的优先（默认），only = 只出没做过的，random = 不看做过没有。
+   * done：题 id → 作答事件（progress.events().map），按时间排序。
+   */
+  function select({ mode, subject, types = [], topic = "", years = [], paper, count = 10, includeAi = true, pick = "prefer", done = null }) {
     let qs = all();
     if (mode === "full") {
       if (!paper) fail("请选择一套试卷");
@@ -526,7 +531,22 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(q);
     }
-    const shuffled = [...groups.values()].sort(() => Math.random() - 0.5);
+    let shuffled = [...groups.values()].map((g) => ({ g, r: Math.random() }));
+    if (done && pick !== "random") {
+      // 每道题的档：0 没做过 · 1 上次做错 / 未判 · 2 上次做对 · 3 三天内刚做过；阅读整组按组内最高档算
+      const now = Date.now();
+      const tier = (q) => {
+        const ev = done.get(q.id);
+        if (!ev?.length) return 0;
+        const last = ev[ev.length - 1];
+        if (now - Date.parse(last.at) < 3 * 86400000) return 3;
+        return last.correct === true ? 2 : 1;
+      };
+      shuffled = shuffled.map((x) => ({ ...x, t: Math.max(...x.g.map(tier)) }));
+      if (pick === "only") shuffled = shuffled.filter((x) => x.t === 0);
+      shuffled.sort((a, b) => a.t - b.t || a.r - b.r);
+    } else shuffled.sort((a, b) => a.r - b.r);
+    shuffled = shuffled.map((x) => x.g);
     const out = [];
     for (const g of shuffled) {
       if (out.length >= count) break;

@@ -46,8 +46,11 @@ function createProgress({ store, bank }) {
       if (!m.bankId) continue;
       for (const h of m.history || []) if (h.correct === true || h.correct === false) add(m.bankId, { at: h.at, correct: h.correct, score: null, max: null, source: "错题重做" });
       if (!m.archived) open.add(m.bankId);
-      // 会话里记了错题但没单独记录作答的，也算做过一次（做错）
-      if (!map.has(m.bankId)) add(m.bankId, { at: m.createdAt, correct: false, score: null, max: null, source: m.source || "错题本", chatId: m.chatId || null });
+      // 会话里记了错题但没单独记录作答的，也算做过一次（做错）。
+      // 同一次作答已经有记录的（同一会话的 bankLog，或快练 / 模考交卷时顺带进错题本、时间相近）不重复记
+      const t = Date.parse(m.createdAt);
+      const same = (map.get(m.bankId) || []).some((e) => e.source !== "错题重做" && ((m.chatId && e.chatId === m.chatId) || (t && Math.abs(Date.parse(e.at) - t) < 30 * 60000)));
+      if (!same) add(m.bankId, { at: m.createdAt, correct: false, score: null, max: null, source: m.source || "错题本", chatId: m.chatId || null, errorType: m.errorType || null });
     }
     for (const list of map.values()) list.sort((x, y) => (x.at < y.at ? -1 : 1));
     return { map, open };

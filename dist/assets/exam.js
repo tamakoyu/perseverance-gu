@@ -43,19 +43,26 @@ export function mountExam(ctx, container, signal) {
     const minutes = el("input", { class: "ky-input", type: "number", min: "0", max: "300", value: String(p.minutes || (mode === "quick" ? 25 : 80)) });
     const years = el("input", { class: "ky-input", placeholder: "年份（可留空），如 2015-2024", value: p.years || "" });
     const allowGen = el("input", { type: "checkbox", checked: true });
+    let savedPick = "prefer";
+    try { savedPick = localStorage.getItem("kaoyan.exam.pick") || "prefer"; } catch {}
+    const pick = select([["prefer", "没做过的优先"], ["only", "只出没做过的"], ["random", "完全随机"]], p.pick || savedPick, (v) => { try { localStorage.setItem("kaoyan.exam.pick", v); } catch {} });
     const out = el("div");
     put(body, el("section", "ky-card",
-      el("p", "ky-muted", mode === "quick" ? "从题库随机抽选择 / 填空题限时速刷，交卷自动判分，错题进错题本（英语题不进）。" : "只练某一科的某几类题型（如英语阅读 4 篇限时 80 分钟），阅读按整篇抽取。主观题交卷时拍照作答，AI 按步骤给分。"),
+      el("p", "ky-muted", mode === "quick" ? "从题库抽选择 / 填空题限时速刷（默认先出没做过的），交卷自动判分，错题进错题本（英语题不进）。" : "只练某一科的某几类题型（如英语阅读 4 篇限时 80 分钟），阅读按整篇抽取。主观题交卷时拍照作答，AI 按步骤给分。"),
       el("div", "ky-grid2", field("科目", subj), field("考点", topic)),
       field("题型", typeBox),
       el("div", "ky-grid3", field(mode === "section" ? "题数（阅读按篇计入）" : "题数", count), field("限时（分钟，0 = 不限）", minutes), field("年份", years)),
+      field("选题", pick),
+      el("p", "ky-muted", "「做过」包括快练 / 模考里作答过的、会话里记录过的、错题本重做过的题。优先模式的顺序：没做过 → 上次做错 → 上次做对 → 三天内刚做过。"),
       el("label", "ky-check", allowGen, " 题库里题不够时，让 AI 按真题风格补题"),
       el("div", "ky-row", btn("开始", async () => {
         const types = [...typeBox.querySelectorAll("input:checked")].map((i) => i.value);
         const yr = years.value.match(/(\d{4})\s*[-~–]\s*(\d{4})/);
         const yearList = yr ? Array.from({ length: Number(yr[2]) - Number(yr[1]) + 1 }, (_, i) => Number(yr[1]) + i) : years.value.match(/\d{4}/g)?.map(Number) || [];
         try {
-          const r = await runJob(ctx, out, () => ctx.call("quiz.start", { mode, subject: subj.value, types, topic: topic.value.trim(), count: Number(count.value), minutes: Number(minutes.value), years: yearList, allowGenerate: allowGen.checked, title: `${subj.value}${mode === "quick" ? "快练" : `专项·${types.join("/")}`}` }), "组卷");
+          const r = await runJob(ctx, out, () => ctx.call("quiz.start", { mode, subject: subj.value, types, topic: topic.value.trim(), count: Number(count.value), minutes: Number(minutes.value), years: yearList, allowGenerate: allowGen.checked, pick: pick.value, title: `${subj.value}${mode === "quick" ? "快练" : `专项·${types.join("/")}`}` }), "组卷");
+          const fromBank = r.fromBank || 0;
+          if (pick.value !== "random" && fromBank) toast(container, r.fresh >= fromBank ? `抽到的 ${fromBank} 道题都没做过` : `${r.fresh} 道没做过，${fromBank - r.fresh} 道做过（没做过的不够了）`);
           startExam(r, Number(minutes.value));
         } catch (err) { reset(out, errorBox(err)); }
       }, "ky-btn ky-btn-primary")),

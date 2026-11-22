@@ -21,6 +21,7 @@ const { createPack } = require("./server/pack.cjs");
 const { createProgress } = require("./server/progress.cjs");
 const { createMomo } = require("./server/momo.cjs");
 const { createScore } = require("./server/score.cjs");
+const DIFF = require("./server/difficulty.cjs");
 const { byId: knowledgeById, createCoverage, validPointIds } = require("./server/knowledge.cjs");
 const { createPaper } = require("./server/paper.cjs");
 const { createHostPrompts } = require("./server/hostprompts.cjs");
@@ -121,9 +122,9 @@ const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插�
   - 题库原题 → kaoyan_bank_record（带 id 和是否做对；主观题部分得分时带 score；只截取了原题一步或给了提示的，带上实际难度 difficulty）。做错再调用 kaoyan_log_mistake 并带 bankId。
   - 其他题（改编、自编）答对、提示后做对、部分对 → kaoyan_record_question。
   - 其他题答错 → kaoyan_log_mistake（同时进错题本，也算一次做错，不要再调用 kaoyan_record_question）。
-  - 都要带难度档 difficulty，按考研视角判断：1 基础＝直接套定义或公式；2 简单＝常规变形两三步；3 中档＝考研选择 / 填空常见难度；4 较难＝真题解答题、综合两三个点；5 压轴。
+  - 都要带难度档 difficulty。${DIFF.RUBRIC_SHORT}。
   - 记录可以和下一步讲解、下一道题的检索放在同一回合并行发出。
-- **按难度递进**：考点的掌握度越高，简单题加的分越少，超过某一档的上限后再做这一档的题几乎不加分。kaoyan_exam_focus 里每个考点有「要继续涨需要的难度」：复习和练习时出这一档及以上的题；刚开始学的考点可以从 1–2 档起步，逐步加难。
+- **按难度递进**：拾星按「学习者现在的能力下这道题的预计做对率」计分：预计能做对的题做对几乎不加分、做错扣得多；有挑战的题做对加得多、做错扣得少。kaoyan_exam_focus 里每个考点有「建议难度」（预计做对率低于 75% 的最低一档）：复习和练习时出这一档或高一档的题；刚开始学的考点会从 1–2 档起步，随着做对自动升档。
 
 ## 答错之后（考研工具箱插件；与通用规则冲突时以本节为准）
 学习者答错、说不会或答得含糊时，不要只给提示让他自己再想，也不要一句话带过就出下一题。按下面的顺序讲完，用老师当面讲题的口吻连成话，不要写成干巴巴的清单：
@@ -654,7 +655,7 @@ exports.activate = (ctx) => {
             hinted: { type: "boolean", description: "是否在关键步骤获得过提示" },
             score: { type: "number", minimum: 0, maximum: 100, description: "可选：按这道题满分给的得分，主观题部分得分时填" },
             learnerAnswer: { type: "string", maxLength: 2000, description: "学习者的作答（简短）" },
-            difficulty: { type: "integer", minimum: 1, maximum: 5, description: "可选：这次实际考的难度档（只截取原题一步、或给了提示时会比原题低）。难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴。不填按题库里的难度" },
+            difficulty: { type: "integer", minimum: 1, maximum: 5, description: `可选：这次实际考的难度档（只截取原题一步、或给了提示时会比原题低）。${DIFF.RUBRIC_SHORT}。不填按题库里的难度` },
           },
           required: ["id", "correct"],
           additionalProperties: false,
@@ -686,7 +687,7 @@ exports.activate = (ctx) => {
             pointIds: pointIdsSchema,
             topic: { type: "string", minLength: 1, maxLength: 200, description: "这道题考的具体考点，如「等价无穷小替换」「二叉树的遍历」" },
             question: { type: "string", maxLength: 600, description: "题目摘要（一两句，可含 LaTeX）" },
-            difficulty: { type: "integer", minimum: 1, maximum: 5, description: "难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴" },
+            difficulty: { type: "integer", minimum: 1, maximum: 5, description: DIFF.RUBRIC_SHORT },
             result: { type: "string", enum: ["独立做对", "提示后做对", "部分对"] },
             note: { type: "string", maxLength: 300, description: "可选：一句话依据" },
           },
@@ -729,7 +730,7 @@ exports.activate = (ctx) => {
             errorType: { type: "string", enum: ERROR_TYPES },
             diagnosis: { type: "string", minLength: 1, maxLength: 2000, description: "错在哪、为什么错" },
             bankId: { type: "string", maxLength: 100, description: "题库原题（真题或习题）填题目 id" },
-            difficulty: { type: "integer", minimum: 1, maximum: 5, description: "难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴" },
+            difficulty: { type: "integer", minimum: 1, maximum: 5, description: DIFF.RUBRIC_SHORT },
           },
           required: ["subject", "topic", "question", "learnerAnswer", "errorType", "diagnosis", "difficulty"],
           additionalProperties: false,
@@ -822,7 +823,7 @@ exports.activate = (ctx) => {
                   correctAnswer: { type: "string", maxLength: 8000, description: "做错时必填：正确答案与关键步骤" },
                   errorType: { type: "string", enum: ERROR_TYPES, description: "做错时必填" },
                   diagnosis: { type: "string", maxLength: 2000, description: "做错时必填：第一处错在哪一步、为什么错" },
-                  difficulty: { type: "integer", minimum: 1, maximum: 5, description: "难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴" },
+                  difficulty: { type: "integer", minimum: 1, maximum: 5, description: DIFF.RUBRIC_SHORT },
                 },
                 required: ["number", "correct", "topic", "difficulty"],
                 additionalProperties: false,
@@ -1112,7 +1113,7 @@ exports.activate = (ctx) => {
     progress?.(answerImgs.length, answerImgs.length + 1, "判分");
     const imgs = [...(m.images || []).map((id) => ({ data: images.get(id) })), ...raw.map((d) => ({ data: d }))];
     const res = await llm.json({
-      system: `你是考研阅卷老师。判断学生这次重做是否正确，按步骤指出问题；顺便按考研视角给这道题评难度档 difficulty（1 基础＝直接套定义或公式；2 简单＝常规变形两三步；3 中档＝考研选择 / 填空常见难度；4 较难＝真题解答题、综合两三个点；5 压轴）。
+      system: `你是考研阅卷老师。判断学生这次重做是否正确，按步骤指出问题；顺便给这道题评难度档 difficulty（${DIFF.RUBRIC_SHORT}）。
 - 有选项的是选择题：只看选的字母（或写出的结论）是否等于正确选项，选对就是 correct:true、score 100，不要求写论证；选错再说明错在哪、正确选项为什么对。
 - feedback 是 Markdown：所有数学符号和式子（哪怕只是 f(x)、x、1）都用 $...$ 包成 LaTeX，例如 $f(x+1)=f(x)$；分点用列表（"- "）或分段，不要用 ①②。
 输出 JSON：{"correct":true/false,"score":0-100,"feedback":"批改意见（中文 Markdown）","difficulty":3}`,
@@ -1279,12 +1280,15 @@ exports.activate = (ctx) => {
       if (Array.isArray(p.ids) && p.ids.length) {
         const byId = new Map(bank.all().map((q) => [q.id, q]));
         qs = p.ids.map((id) => byId.get(id)).filter(Boolean);
-      } else qs = bank.select({ ...p, mode, count });
+      } else {
+        const pick = ["prefer", "only", "random"].includes(p.pick) ? p.pick : "prefer";
+        qs = bank.select({ ...p, mode, count, pick, done: pick === "random" ? null : progress.events().map });
+      }
       if (mode !== "full" && qs.length < count && p.allowGenerate) {
         const extra = await bank.generate({ subject: p.subject, types: p.types, topic: p.topic, count: count - qs.length, signal });
         qs = [...qs, ...extra];
       }
-      if (!qs.length) fail("题库里没有符合条件的题。可以先导入真题，或勾选「题不够时让 AI 出题」。");
+      if (!qs.length) fail(p.pick === "only" ? "符合条件的题都做过了。可以换成「没做过的优先」，或勾选「题不够时让 AI 出题」。" : "题库里没有符合条件的题。可以先导入真题，或勾选「题不够时让 AI 出题」。");
       const materials = bank.materialsOf(qs);
       const attempt = {
         id: uid(), mode, subject: mode === "full" ? qs[0].subject : p.subject, paper: p.paper || "", title: str(p.title, 200),
@@ -1293,7 +1297,10 @@ exports.activate = (ctx) => {
       const items = store.list("attempts");
       items.push(attempt);
       store.saveList("attempts", items);
-      return { attempt, questions: qs.map((q) => bank.forExam(q, materials)) };
+      const { map } = progress.events();
+      const fromBank = qs.filter((q) => q.source !== "AI生成" || map.get(q.id)?.length);
+      const fresh = fromBank.filter((q) => !map.get(q.id)?.length).length;
+      return { attempt, questions: qs.map((q) => bank.forExam(q, materials)), fresh, fromBank: fromBank.length };
     });
   });
   op("quiz.submit", (p) => jobs.start("grade", "判分", async ({ progress, signal }) => {

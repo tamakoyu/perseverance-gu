@@ -691,16 +691,32 @@ details[open] > .ky-sum::before { transform: rotate(90deg); }
 .sk-k-real { color: var(--ink); }
 
 /* 难度阶梯：细线分隔的几行，当前档用白字 */
-.sk-tiers { display: grid; column-gap: 3px; margin-top: 10px; }
-.sk-tier { display: grid; grid-template-rows: auto 1px auto; row-gap: 7px; min-width: 0; color: var(--ink3); cursor: default; }
-.sk-tier-name { font-size: 12px; white-space: nowrap; overflow: hidden; }
-.sk-tier-name small { font-size: 11px; }
-.sk-tier-bar { height: 1px; background: var(--rule); position: relative; }
-.sk-tier-bar i { position: absolute; left: 0; top: 0; height: 1px; background: var(--ink2); }
-.sk-tier-cap { font-size: 12px; font-family: var(--num); font-variant-numeric: tabular-nums; }
-.sk-tier-done { color: var(--ink2); }
-.sk-tier-now { color: var(--ink); }
-.sk-tier-now .sk-tier-bar i { background: var(--ink); }
+/* 掌握度：一个数 + 一根进度条；「按难度看」展开五行（各难度的预计做对率） */
+.sk-mz-head { display: flex; align-items: baseline; justify-content: space-between; }
+.sk-mz-head span { font-size: 13px; color: var(--ink2); }
+.sk-mz-head b { font: 300 26px var(--num); font-variant-numeric: tabular-nums; letter-spacing: -.01em; color: var(--ink); }
+.sk-mz-head b small { font-size: 14px; color: var(--ink3); margin-left: 1px; }
+.sk-mz-bar { height: 3px; border-radius: 2px; background: var(--rule); margin-top: 10px; overflow: hidden; }
+.sk-mz-bar i { display: block; height: 100%; border-radius: 2px; background: var(--ink); transform-origin: left; transition: transform var(--t-in) var(--ease); }
+.sk-mz-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 10px; min-height: 24px; }
+.sk-mz-foot > span { font-size: 12px; color: var(--ink3); }
+.sk-mz-more { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; min-height: 24px; font-size: 12px; color: var(--ink2); transition: color var(--t-fast); }
+.sk-mz-more:hover { color: var(--ink); }
+.sk-mz-more:active { transform: translateY(1px); transition-duration: 40ms; }
+.sk-mz-more:focus-visible { outline: 1.5px solid var(--ink); outline-offset: 3px; border-radius: 4px; }
+.sk-mz-more i { width: 5px; height: 5px; border-right: 1.2px solid currentColor; border-bottom: 1.2px solid currentColor; transform: translateY(-2px) rotate(45deg); transition: transform 200ms var(--ease); }
+.sk-mz-more[aria-expanded="true"] i { transform: translateY(1px) rotate(-135deg); }
+.sk-mz-rows { display: grid; row-gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.sk-mz-rows[hidden] { display: none; }
+.sk-mz-row { display: grid; grid-template-columns: 56px 1fr 40px; align-items: center; column-gap: 14px; font-size: 13px; color: var(--ink2); }
+.sk-mz-name { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sk-mz-name small { font-size: 11px; color: var(--ink3); }
+.sk-mz-track { height: 2px; border-radius: 1px; background: var(--rule); overflow: hidden; }
+.sk-mz-track i { display: block; height: 100%; background: var(--ink3); }
+.sk-mz-pct { text-align: right; font: 13px var(--num); font-variant-numeric: tabular-nums; color: var(--ink3); }
+.sk-mz-now { color: var(--ink); }
+.sk-mz-now .sk-mz-track i { background: var(--ink); }
+.sk-mz-now .sk-mz-pct { color: var(--ink); }
 .sk-facts { font-family: var(--num); font-variant-numeric: tabular-nums; color: var(--ink3); }
 
 /* 小圆点图标：亮度＝掌握；真题状态用形状（实心＝做对、空心＝做错、虚线＝没做） */
