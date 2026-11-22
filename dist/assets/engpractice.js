@@ -1,6 +1,6 @@
 // 英语真题专项：总览（年份 × 部分）→ 选题 → 限时练习（文章 + 题目分栏、划词加生词、手写）→ 判分 → AI 复盘（错因 / 讲解 / 生词 / 强化训练）。
 import { impactCard } from "./score.js";
-import { put, reset, el, btn, md, errorBox, toast, runJob, waitJob, storedImages, inkPad, inkOverlay, remotePad, clock, copy } from "./ui.js";
+import { put, reset, el, btn, md, errorBox, toast, runJob, waitJob, storedImages, inkOverlay, remotePad, clock, copy } from "./ui.js";
 
 const COLS = [
   ["完形", "完形"], ["Text1", "Text 1"], ["Text2", "Text 2"], ["Text3", "Text 3"], ["Text4", "Text 4"],
@@ -235,7 +235,6 @@ export function mountEnglishPractice(ctx, host, signal, { onLeave } = {}) {
       g.qs.push(q);
     }
     const answers = {};
-    const pads = {};
     const remotes = {};
     const unitTimes = {};
     let gi = 0;
@@ -319,7 +318,7 @@ export function mountEnglishPractice(ctx, host, signal, { onLeave } = {}) {
     update();
     signal.addEventListener("abort", () => clearInterval(tick));
 
-    const isAnswered = (q) => { const a = answers[q.id]; return !!(a && (a.choice || (a.mode !== "ink" && a.mode !== "remote" && a.text?.trim()) || (a.mode === "ink" && pads[q.id] && !pads[q.id].isEmpty()) || (a.mode === "remote" && remotes[q.id] && !remotes[q.id].isEmpty()))); };
+    const isAnswered = (q) => { const a = answers[q.id]; return !!(a && (a.choice || (a.mode !== "remote" && a.text?.trim()) || (a.mode === "remote" && remotes[q.id] && !remotes[q.id].isEmpty()))); };
     function drawTabs() {
       reset(tabsEl, ...groups.map((g, i) => {
         const n = g.qs.filter(isAnswered).length;
@@ -393,22 +392,19 @@ export function mountEnglishPractice(ctx, host, signal, { onLeave } = {}) {
         paint();
         put(card, opts);
       } else {
-        const useInk = a.mode === "ink";
-        const ta = el("textarea", { class: `ky-input ky-eng-ta${q.type === "大作文" || q.type === "小作文" ? " ky-eng-ta-lg" : ""}`, placeholder: q.type === "翻译" ? "写下你的译文" : "写作文（也可以切到手写）" }, a.text || "");
+        const ta = el("textarea", { class: `ky-input ky-eng-ta${q.type === "大作文" || q.type === "小作文" ? " ky-eng-ta-lg" : ""}`, placeholder: q.type === "翻译" ? "写下你的译文" : "写作文（也可以切到新窗口手写）" }, a.text || "");
         ta.addEventListener("input", () => { a.text = ta.value; drawTabs(); });
-        pads[q.id] = pads[q.id] || inkPad({ height: q.type === "翻译" ? 260 : 520, label: "手写" });
         remotes[q.id] = remotes[q.id] || remotePad(ctx, { key: `${attempt.id}:${q.id}`, title: `${g.paper || ""} ${partLabel(g.part)} 第 ${q.number} 题`, stem: q.stem, onChange: () => drawTabs() });
         const area = el("div", "ky-eng-answer");
         const toggle = el("div", "ky-eng-modes",
           btn("⌨️ 打字", () => { a.mode = "text"; show(); drawTabs(); }, "ky-btn ky-btn-sm"),
-          btn("✍️ 手写", () => { a.mode = "ink"; show(); drawTabs(); }, "ky-btn ky-btn-sm"),
           btn("🖥 新窗口手写", () => { a.mode = "remote"; show(); drawTabs(); }, "ky-btn ky-btn-sm"));
         const show = () => {
-          const m = a.mode === "ink" ? 1 : a.mode === "remote" ? 2 : 0;
+          const m = a.mode === "remote" ? 1 : 0;
           [...toggle.children].forEach((b, i) => b.classList.toggle("ky-on", i === m));
-          reset(area, m === 1 ? pads[q.id].node : m === 2 ? remotes[q.id].node : ta);
+          reset(area, m === 1 ? remotes[q.id].node : ta);
         };
-        a.mode = useInk ? "ink" : a.mode || "text";
+        a.mode = a.mode === "ink" ? "remote" : a.mode || "text"; // 旧草稿里的内嵌手写改成新窗口
         show();
         put(card, toggle, area);
       }
@@ -424,9 +420,8 @@ export function mountEnglishPractice(ctx, host, signal, { onLeave } = {}) {
       const payload = {};
       for (const q of questions) {
         const a = answers[q.id] || {};
-        const img = a.mode === "ink" ? pads[q.id]?.get() : null;
-        const imgs = a.mode === "remote" ? remotes[q.id]?.get() || [] : img ? [img] : [];
-        payload[q.id] = { choice: a.choice || "", text: a.mode === "ink" || a.mode === "remote" ? "" : a.text || "", images: imgs };
+        const imgs = a.mode === "remote" ? remotes[q.id]?.get() || [] : [];
+        payload[q.id] = { choice: a.choice || "", text: a.mode === "remote" ? "" : a.text || "", images: imgs };
       }
       const out = el("div");
       reset(root, el("h2", "ky-h2", "判分 + AI 复盘"), out);

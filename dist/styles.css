@@ -20,6 +20,7 @@ select.ky-input { background: var(--background); }
 textarea.ky-input { min-height: 64px; resize: vertical; }
 .ky-ta { min-height: 110px; }
 .ky-ta-lg { min-height: 260px; }
+.ky-qpane > .ky-ta { display: block; width: 100%; box-sizing: border-box; resize: vertical; }
 .ky-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 .ky-check { display: inline-flex; align-items: center; gap: 4px; margin: 4px 12px 4px 0; cursor: pointer; }
 .ky-checks { display: flex; flex-wrap: wrap; }

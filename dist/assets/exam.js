@@ -1,6 +1,6 @@
 // 快练 / 单科分题型 / 整套全真模考。
 import { impactCard } from "./score.js";
-import { put, reset, optionsBlock, el, btn, select, field, md, errorBox, toast, runJob, tabs, photoPicker, storedImages, fmtTime, SUBJECTS, inkPad, inkOverlay, padBoard } from "./ui.js";
+import { put, reset, optionsBlock, el, btn, select, field, md, errorBox, toast, runJob, tabs, photoPicker, storedImages, fmtTime, SUBJECTS, inkOverlay, padBoard } from "./ui.js";
 
 const TYPES = {
   数学: ["单选", "填空", "解答"],
@@ -149,8 +149,7 @@ export function mountExam(ctx, container, signal) {
     }, 1000);
     signal.addEventListener("abort", () => clearInterval(tick));
 
-    const pads = {};
-    const answered = (q) => { const a = answers[q.id]; return !!(a && (a.choice || a.text?.trim() || pickers[q.id]?.get().length || (pads[q.id] && !pads[q.id].isEmpty()) || !board.isEmpty(q.id))); };
+    const answered = (q) => { const a = answers[q.id]; return !!(a && (a.choice || a.text?.trim() || pickers[q.id]?.get().length || !board.isEmpty(q.id))); };
     function drawNav() {
       reset(nav, ...questions.map((q, i) => el("button", { type: "button", class: `ky-qbtn${i === idx ? " ky-on" : ""}${answered(q) ? " ky-answered" : ""}`, onclick: () => { idx = i; draw(); } }, q.number || String(i + 1))));
     }
@@ -178,13 +177,12 @@ export function mountExam(ctx, container, signal) {
         }
         put(pane, opts);
       } else {
-        const ta = el("textarea", { class: "ky-input ky-ta", placeholder: q.type === "填空" ? "填写答案" : "可以写关键步骤 / 答案；也可以直接在下面的画板手写" }, a.text || "");
+        const ta = el("textarea", { class: "ky-input ky-ta", placeholder: q.type === "填空" ? "填写答案" : "可以写关键步骤 / 答案；也可以点上方「白板」在新窗口手写，或拍照" }, a.text || "");
         ta.addEventListener("input", () => { a.text = ta.value; drawNav(); });
         put(pane, ta);
         if (q.type !== "填空") {
-          pads[q.id] = pads[q.id] || inkPad({ height: 460, label: "手写作答（交卷时一起提交）" });
           pickers[q.id] = pickers[q.id] || photoPicker("或拍照上传纸上的作答");
-          put(pane, board.slot(q.id), pads[q.id].node, pickers[q.id].node);
+          put(pane, board.slot(q.id), pickers[q.id].node);
         }
       }
       put(pane, el("div", "ky-row",
@@ -215,8 +213,7 @@ export function mountExam(ctx, container, signal) {
       const payload = {};
       for (const q of questions) {
         const a = answers[q.id] || {};
-        const ink = pads[q.id]?.get();
-        payload[q.id] = { choice: a.choice || "", text: a.text || "", images: [...board.get(q.id), ...(ink ? [ink] : []), ...(pickers[q.id]?.get() || [])] };
+        payload[q.id] = { choice: a.choice || "", text: a.text || "", images: [...board.get(q.id), ...(pickers[q.id]?.get() || [])] };
       }
       const out = el("div");
       reset(root, el("h2", "ky-h2", "判分中"), out);

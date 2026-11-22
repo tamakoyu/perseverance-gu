@@ -1,5 +1,5 @@
 // 错题本：今日重做（FSRS）、全部错题、问题清单、录入（手动 / 拍照识别）。
-import { put, reset, optionsBlock, el, btn, select, field, md, errorBox, toast, photoPicker, storedImages, runJob, tabs, fmtTime, SUBJECTS, RATINGS, inkPad, padBoard } from "./ui.js";
+import { put, reset, optionsBlock, el, btn, select, field, md, errorBox, toast, photoPicker, storedImages, runJob, tabs, fmtTime, SUBJECTS, RATINGS, padBoard } from "./ui.js";
 
 export function mountMistakes(ctx, container, signal) {
   const root = el("div", "ky-root");
@@ -74,13 +74,12 @@ export function mountMistakes(ctx, container, signal) {
     const isChoice = !!m.options?.length;
     let chosen = "";
     const pick = { get: () => chosen, set: (k) => { chosen = k; } };
-    const answer = el("textarea", { class: "ky-input ky-ta", placeholder: isChoice ? "点上面的选项作答；想写理由或草稿也可以写在这里" : "重新做一遍，写下答案或关键步骤；也可以在下面的画板 / 新窗口白板手写，或拍照" });
+    const answer = el("textarea", { class: "ky-input ky-ta", placeholder: isChoice ? "点上面的选项作答；想写理由或草稿也可以写在这里" : "重新做一遍，写下答案或关键步骤；也可以点上方「白板」在新窗口手写，或拍照" });
     const answerText = () => [chosen ? `选 ${chosen}` : "", answer.value.trim()].filter(Boolean).join("\n");
-    const pad = inkPad({ height: 420, label: "手写作答（判分时一起提交）" });
     const photos = photoPicker("拍照作答");
     const reveal = el("div");
     const actions = el("div", "ky-row");
-    put(card, questionBlock(m, isChoice ? pick : null), field(isChoice ? "补充说明（可不填）" : "这次的作答", answer), board.slot(qid), pad.node, photos.node, actions, reveal);
+    put(card, questionBlock(m, isChoice ? pick : null), field(isChoice ? "补充说明（可不填）" : "这次的作答", answer), board.slot(qid), photos.node, actions, reveal);
     put(body, card);
     board.focus({
       qid,
@@ -90,7 +89,7 @@ export function mountMistakes(ctx, container, signal) {
       index: 0,
       total: 1,
     });
-    const handwriting = () => { const ink = pad.get(); return [...board.get(qid), ...(ink ? [ink] : []), ...photos.get()]; };
+    const handwriting = () => [...board.get(qid), ...photos.get()];
 
     const showAnswer = (feedback) => {
       reset(actions);
