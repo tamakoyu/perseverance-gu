@@ -10,6 +10,7 @@ const { fail } = require("./util.cjs");
 const SRC = path.join(__dirname, "hostprompts");
 const SEGMENTS = [
   { key: "system-prompt.md", title: "总纲：理解 + 考场得分，只在考试会考的内容里找薄弱点" },
+  { key: "shared/10-voice.md", title: "语气：考研讲师当面讲课，口语化、先讲为什么、不客套" },
   { key: "shared/20-question-tools.md", title: "出题工具：选择题模式下计算 / 填空 / 解答题怎么出，一次一题不停顿" },
   { key: "prober/10-probe-doctrine.md", title: "测底：只测高频考点、优先用真题、答错当场讲" },
   { key: "teacher/05-method.md", title: "教学方法：考纲定义 → 讲清为什么 → 落到题型" },
@@ -143,10 +144,23 @@ function createHostPrompts({ ctx, store }) {
     const meta = store.value("hostPrompts", { applied: false, backups: {}, sourceHash: {} });
     if (!meta.applied) return 0;
     let n = 0;
+    let settings = null;
     for (const s of SEGMENTS) {
       const f = promptFile(s.key);
       const cur = readText(f);
       const text = ours(s.key);
+      // 插件新加的段落（应用时还没有它）：先备份学习者原来的文件和开关，再换上并打开，「恢复原版」时还原
+      if (!meta.backups?.[s.key]) {
+        settings = settings || readSettings();
+        settings.agent = settings.agent || {};
+        settings.agent.prompts = settings.agent.prompts || {};
+        meta.backups = { ...(meta.backups || {}), [s.key]: { hadFile: cur != null, text: cur, wasOn: settings.agent.prompts[s.key] } };
+        if (cur !== text) writeAtomic(f, text);
+        settings.agent.prompts[s.key] = true;
+        meta.oursHash = { ...(meta.oursHash || {}), [s.key]: sha(text) };
+        n++;
+        continue;
+      }
       if (cur == null || cur === text) continue;
       const h = sha(cur);
       if (h !== meta.oursHash?.[s.key] && !(OLD_OURS[s.key] || []).includes(h)) continue; // 学习者自己改过，不动
@@ -154,6 +168,7 @@ function createHostPrompts({ ctx, store }) {
       meta.oursHash = { ...(meta.oursHash || {}), [s.key]: sha(text) };
       n++;
     }
+    if (settings) writeSettings(settings);
     if (n) store.saveValue("hostPrompts", meta);
     return n;
   }
