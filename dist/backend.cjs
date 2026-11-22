@@ -21,6 +21,7 @@ const { createProgress } = require("./server/progress.cjs");
 const { createMomo } = require("./server/momo.cjs");
 const { createScore } = require("./server/score.cjs");
 const { createPaper } = require("./server/paper.cjs");
+const { createHostPrompts } = require("./server/hostprompts.cjs");
 const { transcriptText } = require("./server/notes.cjs");
 
 // 路径默认留空：每个人在 设置 → 考研工具箱 里填（或点「自动检测」从 Obsidian 读取）。
@@ -53,11 +54,12 @@ const PROBER_STUDY = `## 学习模式（考研工具箱插件）
 const TEACHER_STUDY = `## 学习模式（考研工具箱插件）
 判断：只有当本会话${MARKER}，或测底评估里写有「学习模式」时，本节才生效；否则忽略本节。本节与通用教学规则冲突时，以本节为准。
 学习者是零基础，流程固定为「先讲 → 再考 → 找问题 → 修复」：
-1. 不出预测题：不要使用 quiz 的 type: "predict"。每一步默认用讲授式把内容讲清楚：定义、直观理解、关键条件，至少一个完整例题；不要指望学习者自己推出来。
-2. 每讲完一步，用 quiz 出一道检查题（type: "check"），考应用不考背诵，难度贴近考研。
-3. 答错或答得含糊时：判断错因类型（${ERROR_TYPES.join(" / ")}），调用 kaoyan_log_mistake 记录，然后针对错因重讲，再换一道不同的检查题确认修复。连错两次就退回到更基础的一步。
-4. 计划里所有节点都讲完后，做一次综合小测：3–5 道检查题，每回合一道，混合考查本课各知识点，题面不提示用哪个知识点。每题都照第 3 条处理错题。
-5. 综合小测结束后，调用 kaoyan_study_report 生成问题清单，同一回合调用 kaoyan_settle_study 结算这次学习，再用中文向学习者总结（顺带说一句预测分的变化），并建议之后开一个练习会话做变式题。
+1. 计划顺序：考纲要求的定义和定理 → 这一章的高频题型（按 kaoyan_exam_focus 从高到低排）。定义只讲到考纲要求的深度；考研不考的严格化内容（如 ε-N / ε-δ 证明）用一两句直观说明带过。
+2. 不出预测题：不要用 quiz 的 type: "predict"。每一步用讲授式讲清楚：确切的定义 / 定理和成立条件、直观理解、为什么这样想、至少一道写全过程的例题；不要指望学习者自己推出来。题型节点按「识别信号 → 方法步骤 → 常见陷阱 → 例题」讲。
+3. 每讲完一步，用 quiz 出一道检查题（type: "check"），按「出题规则」：考应用不考背诵，优先拿习题或真题当原型。
+4. 每道检查题判定后按「逐题记录」记录。答错按「答错之后」讲完（kaoyan_log_mistake 的错因类型：${ERROR_TYPES.join(" / ")}），再换一道同考法的题确认。同一个点连错两次，就退回更基础的一步。检查题从 1–2 档起步，节点收尾和综合小测用 3 档以上。
+5. 所有节点讲完后做综合小测：3–5 道，每回合一道，混合考本课各知识点，题面不提示用哪个知识点，尽量用真题原题或改编。每题都照第 4 条处理错题。
+6. 小测结束后调用 kaoyan_study_report 生成问题清单，同一回合调用 kaoyan_settle_study 结算，再用中文总结（顺带说一句预测分的变化），建议之后开一个练习会话做变式题。
 全程用中文。`;
 
 const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插件）
@@ -78,38 +80,61 @@ const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插�
 - 练习会话的目标都练完时。
 同一会话可以多次调用（后一次覆盖前一次，不会重复加分）。调用后用一句话告诉学习者预测分的变化。不要在会话刚开始或讲到一半时调用。
 
-## 真题题库（考研工具箱插件）
-学习者的题库里有历年数学一、408 真题（含答案和解析），可用工具：
-- kaoyan_bank_search：按考点 / 关键词检索真题，返回题号、年份、题型和题干摘要（不含答案）。
-- kaoyan_bank_get：按 id 取一道题的完整内容（题干、选项、答案、解析）。
-真题是难度和考法的标尺，不是必须照搬的题目。核心是**只考学习者学过的东西**：
-- **已学范围**＝本会话已经讲过的节点 + 测底显示已掌握的内容 + 学习者明确说学过的章节（笔记里有对应章节也可参考）。拿不准某个知识点学没学过时，当作没学过处理。
-- 真题检索结果里的「考点」逐个对照已学范围：
-  - **全部在范围内** → 用原题，注明出处（如「2019 年数一第 3 题」）。
-  - **有超出范围的部分** → 改编：保留这道题的考法和陷阱，把超纲部分换成学过的内容，或删掉超纲的小问；注明「改编自 20xx 年数一第 n 题」。改动太大、原题考法已经保不住的，就换一道真题，或自己出同等难度的题。
-  - 不要为了用真题而提前讲后面的内容，也不要出需要没学过的知识才能做的题。
-什么时候用真题：
-1. **规划时**：对计划里的主要考点检索真题（limit 8–10），**在同一个回合里并行发出这些检索**，不要一个一个等；看历年怎么考、考到多深，据此决定讲到什么深度、节点终点放在哪里；向学习者介绍计划时顺带说明「这个点近年常考 …」。
-2. **每个计划节点讲完、转到下一个节点之前**：用一道真题难度的题收尾——按上面的规则用原题或改编题（优先近 15 年，用 yearFrom 过滤）。检索结果不对题就换更具体的考点词再搜一次；仍然没有合适的，自己出一道与真题同等难度的题。
-3. 学习模式的综合小测里，尽量用原题或改编题（不必强求比例）。
-4. 练习会话里，每个目标的主体题优先从真题里挑或照真题改编。
-用法细节：
-- 检索用具体考点词（「周期 抽象函数」「反常积分 比较判别」），不要只用「函数」「积分」这种泛词。
-- 用真题出题时，**答案和解析只给你自己看**，绝不能在学习者作答前泄露；quiz 的解析 / 标准答案按官方解析整理，作答后结合官方解析讲评。标了「AI 解答 / AI 补写」的答案可能有误，先自己核对。
-- 真题是多步综合题、且各步都在已学范围内时，用 quiz 的自由作答形式，或拆成几个选项考关键一步；不要只因为题目超出「刚讲的这一步」就放弃——节点收尾题本来就该综合已学的多个点。
-- **记录完成情况**：用题库真题出的题，学习者一作答、你判定对错后，马上调用 kaoyan_bank_record（带真题 id、是否做对；主观题部分得分时带 score）。做错时调用 kaoyan_log_mistake 也带上 bankId。**只有原题才记录**；改编题、自己出的题不要调用 kaoyan_bank_record（错题本照常记，不带 bankId）。
-- **省往返**：同一回合需要的检索 / 取题 / 记录工具一次并行发出；kaoyan_bank_record 和下一道题的检索可以放在同一回合。
-- **计划图（plan_init）**：节点标题写短（中文不超过 16 个字），不要用 <br/> 或换行，细节放到讲解里。
-- 题库只有数学一、408；英语、政治没有真题工具时，按下面「考研难度」自己出题。
+## 题库与考点频率（考研工具箱插件）
+题库里有历年数学一、408、英语一真题（含答案和解析）；以后导入的习题书题目标「习题」。可用工具：
+- kaoyan_exam_focus：按章节或考点查考点频率表，包括近 15 年题数和分值、常见题型、学习者掌握度、最近几道真题。**规划前必查**；讲什么、讲多深、先讲什么都以它为准。统计是按关键词自动归类的，可能有偏差；某个细分点（如「子列」「函数方程」）考不考，用 kaoyan_bank_search 搜它，看近 15 年命中几道。
+- kaoyan_bank_search：按考点或关键词检索题目，返回 id、出处、题型、题干摘要（不含答案）。检索词要具体（「周期 抽象函数」「反常积分 比较判别」），不要只用「函数」「积分」这种泛词。
+- kaoyan_bank_get：按 id 取一道题的完整内容（题干、选项、答案、解析）。**答案和解析只给你自己看**，学习者作答前绝不能透露；标了「AI 解答 / AI 补写」的答案可能有误，先自己核对。
+- **省往返**：规划时在同一个回合里并行发出 kaoyan_exam_focus、各主要考点的 kaoyan_bank_search（limit 8–10）和读笔记，不要一个一个等。介绍计划时说明「这个点近 15 年考了 n 次」。
 
-## 考研难度（考研工具箱插件；本节与通用教学 / 出题规则冲突时，以本节为准）
+## 计划怎么排（考研工具箱插件；与通用规划规则冲突时以本节为准）
+- **学习会话**（零基础新学）：考纲要求的定义和定理 → 这一章的高频题型。只讲到考纲要求的深度。
+- **复习会话**（复习、回顾，或测底显示已学过）：节点就是考点或题型，按「分值 ×（1 − 掌握度）」从高到低排。定义不单独成节点，做题暴露缺口时再补。
+- 一次 4–8 个节点，最后一个是「真题综合」。近 15 年几乎没考过的细节不单独成节点；测底发现的冷门漏洞不进计划，在介绍里提一句。
+- 依赖边只画真正的前置，不要为了从最底层推起而拉长链条。
+- 计划图（plan_init）的节点标题不超过 16 个中文字，不用 <br/> 或换行。
+
+## 出题规则（考研工具箱插件；与通用出题规则冲突时以本节为准）
 学习者在备考全国硕士研究生统一考试（数学一 / 408 / 英语一 / 政治），目标是在考场上做对真题。
-- 「一次只讲一步」是讲解的节奏，不是题目的难度。检查题可以只考刚讲的这一步，但必须是考研的样子：换条件、设陷阱（定义域、端点、可导与连续、充分非必要、反例）、或把这一步和前面讲过的内容组合。只是把刚讲的式子代一次数、照上一段讲解机械套用就能做对的题，太简单，重出。
-- 选择题的干扰项要对应考研里真实常见的错误（漏条件、记反结论、混淆相近概念），不要放一眼就能排除的选项。
-- 预测题保持引导性即可，但不要连续两步以上都是「预测 + 一步代入检查」的节奏，中间要插入考研难度的检查题。
-- 难度调节：连续两道检查题答对且思路完整 → 下一道直接上真题难度的综合题（原题或改编，仍限已学范围）；答错 → 先针对错因修复，再用一道**同难度**的变式确认，不要退回纯代入题；同一点连错两次，才降回更基础的一步。
-- 学习者说「复习」或测底显示已经学过时，起点就是考研难度：基础定义一句带过，直接从易错点和真题考法讲起。
-- 学习者说太简单 / 太难时，立刻按他说的调整。`;
+- **每道题都要有原型**：
+  - 题库原题（真题或习题）对得上考点和难度，就直接用。
+  - 对不上就改编：保留考法，换数据，或去掉超出已学范围的部分。改动太大、原题考法保不住，就换一道题。
+  - 题干第一行标出处：「真题·2019 数一 T3」「改编自 2019 数一 T3」「习题·《书名》第 n 题」「改编自《书名》第 n 题」。
+  - 实在找不到原型才自编，标「自编」，并照着频率表里近年真题的形式出。
+- **只考已学**：已学范围＝本会话讲过的节点 + 测底显示已掌握的 + 学习者说学过的章节。拿不准就当没学过。不要为了用真题提前讲后面的内容。
+- **真题没有的题型不出**：「仅凭条件能否断言…」式的逻辑辨析、ε-N / ε-δ 证明、函数方程推导、构造反例、数学分析或竞赛风格的题都不出，除非频率表或检索显示近年真题确实这样考过。判断说法对错的辨析题，一个节点最多一道。
+- **难度**：
+  - 刚讲完的一步可以只考这一步，但要像真题里的那一步，有真实的计算和陷阱，不是把式子换个数字代一次。
+  - 每个节点讲完、转到下一个之前，用一道真题难度的题收尾（原题或改编，优先近 15 年，用 yearFrom 过滤）。
+  - 连续两道答对且思路完整，下一道直接上真题难度。学习者说太简单或太难，立刻调整。
+- **选项和解析**：错误选项对应考生真实常犯的错（漏条件、记反结论、算错一步），不放一眼能排除的选项；解析写完整解题过程，一步一行。
+- **综合题**：真题是多步综合题、各步都在已学范围内时，自由作答模式下让学习者写关键步骤；选择题模式下拆成关键一步，连着出几道，每道接着上一道的结果。计算题和填空题在选择题模式下做成 4 个结果选项，干扰项用常见算错的结果。完整做一道大题，建议学习者开练习会话。
+- **练习会话**：每个目标的主体题从题库挑，或照题库题改编。
+- **逐题记录（拾星按题给考点的星加分）**：每道检查题、练习题、测底题，判定后马上记录一次（预测题不记）：
+  - 题库原题 → kaoyan_bank_record（带 id 和是否做对；主观题部分得分时带 score；只截取了原题一步或给了提示的，带上实际难度 difficulty）。做错再调用 kaoyan_log_mistake 并带 bankId。
+  - 其他题（改编、自编）答对、提示后做对、部分对 → kaoyan_record_question。
+  - 其他题答错 → kaoyan_log_mistake（同时进错题本，也算一次做错，不要再调用 kaoyan_record_question）。
+  - 都要带难度档 difficulty，按考研视角判断：1 基础＝直接套定义或公式；2 简单＝常规变形两三步；3 中档＝考研选择 / 填空常见难度；4 较难＝真题解答题、综合两三个点；5 压轴。
+  - 记录可以和下一步讲解、下一道题的检索放在同一回合并行发出。
+- **按难度递进**：考点的掌握度越高，简单题加的分越少，超过某一档的上限后再做这一档的题几乎不加分。kaoyan_exam_focus 里每个考点有「要继续涨需要的难度」：复习和练习时出这一档及以上的题；刚开始学的考点可以从 1–2 档起步，逐步加难。
+
+## 答错之后（考研工具箱插件；与通用规则冲突时以本节为准）
+学习者答错、说不会或答得含糊时，不要只给提示让他自己再想，也不要一句话带过就出下一题。按下面的顺序讲完：
+1. **正确答案**：先直接说。
+2. **你为什么会错**：从他选的选项、作答和思路栏推断他是怎么想的，找出**第一处**出错的地方，说清楚错在哪、为什么看起来对。
+3. **正确的解题流程，一步一行**：识别（题目里什么特征提示用什么方法）→ 步骤（每步做什么、为什么这么做，关键算式写全）→ 检查（最后要验证什么）。
+4. **一句话规律**：以后看到什么特征就怎么做，或者这个坑怎么避开。
+讲完调用 kaoyan_log_mistake 记录（附错因），再出一道同考法、换数据或条件的题确认。
+- 同一个点最多再换 2 道。还错就退回更基础的一步，或者先往下走、收尾时再回来。
+- 冷门点（近 15 年很少考）不要反复纠缠，记进错题本后继续。
+- 练习会话里先按练习规则给提示；两轮提示后仍然错，或者学习者说不会，就按上面 1–4 讲完，再结束这道题。`;
+
+const PROBER_EXAM = `## 测底（考研工具箱插件；与通用测底规则冲突时以本节为准）
+学习模式、讲题模式不测底时，忽略本节。
+- 测底前先查 kaoyan_exam_focus，只测这一章的高频考点。题目优先用题库原题（kaoyan_bank_search / kaoyan_bank_get，答案只给你自己看），题太长就截取关键一步改成选择题。不出逻辑辨析、ε 证明、竞赛风格的题。3–6 道就够。
+- 每道测底题判定后按「逐题记录」记录：题库原题用 kaoyan_bank_record；其他题答对用 kaoyan_record_question、答错用 kaoyan_log_mistake；都带难度档 difficulty（1 基础 … 5 压轴）。
+- **答错要讲**：答错或答「不知道」时，出下一题之前先用 3–6 行讲清楚：正确答案；他可能是怎么想的、错在哪一步；正确思路的关键步骤（一步一行）。不展开成完整教学，但不能让学习者带着「不知道为什么错」往下做。
+- probe_done 的 assessment 按考点写：会做哪些题型、在哪类题上出错、错因（概念 / 方法 / 计算）、还有哪些没测到。`;
 
 const PAPER_MARKER = "本会话里学习者发来了**做过的**题目照片（照片上能看到学习者自己的作答痕迹：手写答案、演算过程、勾选的选项），或者消息以「【讲题】」开头";
 
@@ -129,7 +154,7 @@ const TEACHER_PAPER = `## 讲题模式（考研工具箱插件；本节优先于
    - 照片上有红笔批改时可以参考，但仍要自己核对。字迹看不清、题目被遮挡的地方直接问学习者，不要猜。
    - 做对但过程有隐患（蒙对、思路绕远、关键步骤缺论证）的，算做对，在表里备注「对·有隐患」。
 2. **错因**：每道错题找到**第一处**出错的步骤，归到错因类型（${ERROR_TYPES.join(" / ")}），知识点写具体（「定积分换元：换元后上下限没跟着换」，不要只写「积分」）。diagnosis 写清楚错在哪一步、学习者写的是什么、为什么错。
-3. **记录**：判完后在同一回合调用一次 kaoyan_log_paper，items 里放**全部**题目（做对的也放，correct: true，带得分和知识点）；做错的写全题目原文、学习者作答、正确答案与关键步骤、错因、诊断。pages 填这道题在第几张照片上（按本会话里学习者发图的先后从 1 数起，跨页就写多张）。错题会自动进错题本（不要再对这些题调用 kaoyan_log_mistake），原题图片会在后台自动裁好。
+3. **记录**：判完后在同一回合调用一次 kaoyan_log_paper，items 里放**全部**题目（做对的也放，correct: true，带得分、知识点和难度档 difficulty 1–5；做对的题会给对应考点的星加分）；做错的写全题目原文、学习者作答、正确答案与关键步骤、错因、诊断。pages 填这道题在第几张照片上（按本会话里学习者发图的先后从 1 数起，跨页就写多张）。错题会自动进错题本（不要再对这些题调用 kaoyan_log_mistake），原题图片会在后台自动裁好。
 4. **批改表**：用一张 Markdown 表告诉学习者结果：题号｜对错｜得分｜知识点｜错因（一句话）；表下写总分和错因分布。然后说「哪道判得不对直接告诉我」。学习者纠正后，**只带被改的题**再调用一次 kaoyan_log_paper（按题号覆盖；改成做对会从错题本里删掉）。全对时直接表扬，问要不要讲「对·有隐患」的题，然后结算收尾。
 5. **规划**（和批改表同一回合，教学会话用 plan_init）：每道错题一个节点，按卷面顺序，标题如「第3题·换元换限」；同一知识点错了多道题的，这几道连成一串。再为每个错因知识点加一个「巩固：<知识点>」节点，依赖对应的错题节点，放在后面。几道题错因相同就合并成一个巩固节点。节点标题不超过 16 个字。
 6. **逐题讲错题**（每个错题节点）：
@@ -224,8 +249,18 @@ exports.activate = (ctx) => {
     onNav: (d) => { try { ctx.events.emit("pad", { ...d, nav: true }); } catch { /* ignore */ } } });
   const changed = (what) => { try { ctx.events.emit("changed", { what }); } catch { /* ignore */ } };
   const momo = createMomo({ store, getToken: () => String(settings().momoToken || "").trim() });
-  const score = createScore({ ctx, store, bank, llm, progress, momo, getSettings: settings, transcriptText, classify: (t) => stats.classify(t) });
+  const score = createScore({ ctx, store, bank, llm, progress, momo, getSettings: settings, transcriptText, classify: (t) => stats.classify(t), onChange: () => changed("score") });
   const paper = createPaper({ ctx, store, llm, pdf, images, bank, addMistake: (input) => addMistake(input), changed });
+  const hostPrompts = createHostPrompts({ ctx, store });
+  // 启动 20 秒后：之前没归上考点 / 没评上难度的习题书题目，在后台补上（导入时的后台调用可能失败过）
+  setTimeout(() => {
+    if (ctx.signal.aborted) return;
+    try {
+      const ids = bank.all().filter((q) => q.source === "习题").map((q) => q.id);
+      score.queueClassify(ids);
+      score.queueRate(ids);
+    } catch { /* 下次启动再补 */ }
+  }, 20000);
   let momoSyncing = null;
   /** 墨墨数据超过 3 小时就在后台刷新，刷新完通知页面。 */
   const refreshMomo = (force = false) => {
@@ -259,6 +294,7 @@ exports.activate = (ctx) => {
       images: Array.isArray(input.images) ? input.images.filter((x) => typeof x === "string") : [],
       chatId: input.chatId || null,
       bankId: input.bankId || null,
+      difficulty: Number.isInteger(input.difficulty) && input.difficulty >= 1 && input.difficulty <= 5 ? input.difficulty : null,
       card: fsrs.newCard(),
       history: [],
       archived: false,
@@ -294,6 +330,7 @@ exports.activate = (ctx) => {
   // ── 智能体规则与工具 ───────────────────────────────────
   ctx.registerInstructions({ agents: ["teacher", "practice"], text: VAULT_TEXT });
   ctx.registerInstructions({ agents: ["teacher", "practice"], text: TEACHER_PAPER });
+  ctx.registerInstructions({ agents: ["prober"], text: PROBER_EXAM });
   ctx.registerInstructions({ agents: ["prober"], text: PROBER_PAPER });
   if (settings().studyMode) {
     ctx.registerInstructions({ agents: ["prober"], text: PROBER_STUDY });
@@ -303,6 +340,8 @@ exports.activate = (ctx) => {
   const textResult = (text, details) => ({ content: [{ type: "text", text }], details });
   const guard = (signal) => { if (signal?.aborted || ctx.signal.aborted) throw new Error("已取消"); };
 
+  /** 每个会话里用 kaoyan_bank_get 取过的题（会话被压缩成摘要后，模型自己记不住用过哪些）。重启后靠 bankLog / 错题里的 chatId 兜底。 */
+  const usedInChat = new Map();
   ctx.registerTools({
     agents: ["teacher", "practice", "prober"],
     create: (context) => {
@@ -331,7 +370,6 @@ exports.activate = (ctx) => {
           },
         },
       ];
-      if (context.agent === "prober") return tools;
       tools.push(
         {
           name: "kaoyan_bank_search",
@@ -352,10 +390,22 @@ exports.activate = (ctx) => {
           },
           execute: async (_id, input, signal) => {
             guard(signal);
-            const hits = bank.search(input.query, input);
-            if (!hits.length) return textResult(`题库里没有找到和「${input.query}」相关的真题。`, { hits: [] });
-            const lines = hits.map((q) => `- id=${q.id} | ${q.paper || "（无出处）"} 第${q.number}题 | ${q.type} ${q.score || ""}分 | 考点：${q.topics.join("、") || "—"}${q.source === "AI生成" ? " | AI生成" : ""}\n  ${q.stem.replace(/\s+/g, " ").slice(0, 160)}`);
-            return textResult(`找到 ${hits.length} 道（答案用 kaoyan_bank_get 取，不要提前告诉学习者）：\n${lines.join("\n")}`, { ids: hits.map((q) => q.id) });
+            const want = Math.max(1, Math.min(20, input.limit || 8));
+            const found = bank.search(input.query, { ...input, limit: Math.min(20, want * 2) });
+            if (!found.length) return textResult(`题库里没有找到和「${input.query}」相关的真题。`, { hits: [] });
+            // 标上做没做过：本会话用过的排最后，以前做对过的其次，没做过 / 做错过的优先（各组内保持相关度顺序）
+            const { map } = progress.events();
+            const mine = usedInChat.get(context.chatId) || new Set();
+            const info = (q) => {
+              const ev = map.get(q.id) || [];
+              const last = ev[ev.length - 1];
+              const inChat = mine.has(q.id) || (!!context.chatId && ev.some((e) => e.chatId === context.chatId));
+              const tag = inChat ? "本会话用过" : ev.length ? `做过${ev.length}次·上次${last.correct === true ? "对" : last.correct === false ? "错" : "未判"}` : "没做过";
+              return { q, tag: `难度${score.qDiff(q)} | ${tag}`, rank: inChat ? 2 : last?.correct === true ? 1 : 0 };
+            };
+            const hits = found.map(info).map((x, i) => ({ ...x, i })).sort((a, b) => a.rank - b.rank || a.i - b.i).slice(0, want);
+            const lines = hits.map(({ q, tag }) => `- id=${q.id} | ${q.paper || "（无出处）"} 第${q.number}题 | ${q.type} ${q.score || ""}分 | ${tag} | 考点：${q.topics.join("、") || "—"}${q.source === "AI生成" ? " | AI生成" : q.source === "习题" ? " | 习题" : " | 真题"}\n  ${q.stem.replace(/\s+/g, " ").slice(0, 160)}`);
+            return textResult(`找到 ${hits.length} 道（没做过、做错过的排在前面；「本会话用过」的不要再出；答案用 kaoyan_bank_get 取，不要提前告诉学习者）：\n${lines.join("\n")}`, { ids: hits.map((h) => h.q.id) });
           },
         },
         {
@@ -367,9 +417,11 @@ exports.activate = (ctx) => {
             guard(signal);
             const q = bank.all().find((x) => x.id === input.id);
             if (!q) return textResult(`找不到 id=${input.id} 的题，请先用 kaoyan_bank_search 检索。`, {});
+            if (context.chatId) { if (!usedInChat.has(context.chatId)) usedInChat.set(context.chatId, new Set()); usedInChat.get(context.chatId).add(q.id); }
+            score.queueRate([q.id]);
             const material = q.material || (q.materialKey ? bank.materialsOf()[q.materialKey] : "") || "";
             const text = [
-              `出处：${q.paper || "（无）"} 第${q.number}题（${q.type}，${q.score || "?"} 分）${q.source === "AI生成" ? "，AI 生成" : ""}`,
+              `出处：${q.source === "习题" ? "习题·" : ""}${q.paper || "（无）"} 第${q.number}题（${q.type}${q.source === "习题" ? "" : `，${q.score || "?"} 分`}）${q.source === "AI生成" ? "，AI 生成" : ""}`,
               material ? `阅读材料：\n${material}` : "",
               `题干：\n${q.stem}`,
               q.options.length ? `选项：\n${q.options.map((o) => `(${o.key}) ${o.text}`).join("\n")}` : "",
@@ -381,6 +433,25 @@ exports.activate = (ctx) => {
         },
       );
       tools.push({
+        name: "kaoyan_exam_focus",
+        label: "考点频率表",
+        description: "查一章（或一个考点）的考点频率表：每个考纲考点近 15 年真题题数和分值、常见题型、学习者当前掌握度、复习优先级，以及最近几道真题（id、出处、题干摘要，不含答案）。规划和测底前先查，用来决定讲什么、先讲什么、讲多深。",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", minLength: 1, maxLength: 200, description: "章节或考点名，如「函数 极限 连续」「一元函数积分学」「二叉树」" },
+            subject: { type: "string", enum: ["数学", "408", "英语", "政治"] },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+        execute: async (_id, input, signal) => {
+          guard(signal);
+          const r = score.focus(input);
+          return textResult(r.text, { leaves: r.leaves.map((l) => l.id) });
+        },
+      });
+      tools.push({
         name: "kaoyan_bank_record",
         label: "记录真题作答",
         description: "用题库真题（kaoyan_bank_get 取到的题）出的检查题 / 练习题，学习者作答并判定后立即调用一次：把这道真题记为已做，题库「完成情况」里会显示。只用于题库里的真题，自己出的题或改编题不要调用。",
@@ -391,6 +462,7 @@ exports.activate = (ctx) => {
             correct: { type: "boolean", description: "学习者这次是否做对（部分对算 false，并给 score）" },
             score: { type: "number", minimum: 0, maximum: 100, description: "可选：按这道题满分给的得分，主观题部分得分时填" },
             learnerAnswer: { type: "string", maxLength: 2000, description: "学习者的作答（简短）" },
+            difficulty: { type: "integer", minimum: 1, maximum: 5, description: "可选：这次实际考的难度档（只截取原题一步、或给了提示时会比原题低）。难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴。不填按题库里的难度" },
           },
           required: ["id", "correct"],
           additionalProperties: false,
@@ -402,8 +474,35 @@ exports.activate = (ctx) => {
           try { ({ result: r, impact } = score.measure(() => progress.record({ ...input, agent: context.agent, chatId: context.chatId }))); }
           catch { r = progress.record({ ...input, agent: context.agent, chatId: context.chatId }); }
           if (!r) return textResult("题库里没有这个 id，没有记录。只有题库真题才需要记录。", {});
+          score.queueRate([input.id]);
           changed("score");
           return textResult(`已记录：${r.q.paper} 第${r.q.number}题 ${input.correct ? "做对" : "做错"}。${impact ? impactText(impact) : ""}${input.correct ? "" : "如果还没记错题，用 kaoyan_log_mistake（带上 bankId）记进错题本。"}`, { id: r.entry.id });
+        },
+      });
+      tools.push({
+        name: "kaoyan_record_question",
+        label: "记录做题",
+        description: "学习者答对（或提示后做对、部分对）一道不是题库原题的题（改编题、自编题、检查题、练习题、测底题）后调用：按难度给对应考点的星加分。题库原题用 kaoyan_bank_record；答错用 kaoyan_log_mistake（它会同时记一次做错）。预测题不记。",
+        parameters: {
+          type: "object",
+          properties: {
+            subject: { type: "string", enum: ["数学", "408", "英语", "政治"] },
+            topic: { type: "string", minLength: 1, maxLength: 200, description: "这道题考的具体考点，如「等价无穷小替换」「二叉树的遍历」" },
+            question: { type: "string", maxLength: 600, description: "题目摘要（一两句，可含 LaTeX）" },
+            difficulty: { type: "integer", minimum: 1, maximum: 5, description: "难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴" },
+            result: { type: "string", enum: ["独立做对", "提示后做对", "部分对"] },
+            note: { type: "string", maxLength: 300, description: "可选：一句话依据" },
+          },
+          required: ["subject", "topic", "difficulty", "result"],
+          additionalProperties: false,
+        },
+        execute: async (_id, input, signal) => {
+          guard(signal);
+          let r, impact = null;
+          try { ({ result: r, impact } = score.measure(() => score.recordQuestion({ ...input, chatId: context.chatId, src: { practice: "练习会话", prober: "测底" }[context.agent] || "教学会话" }))); }
+          catch { r = score.recordQuestion({ ...input, chatId: context.chatId }); }
+          changed("score");
+          return textResult(`已记录（难度 ${r.entry.difficulty}·${r.entry.result}${r.leaves.length ? `，计入：${r.leaves.join("、")}` : "，没对上考纲考点，没有加分"}）。${impact ? impactText(impact) : ""}`, { id: r.entry.id });
         },
       });
       tools.push({
@@ -421,16 +520,19 @@ exports.activate = (ctx) => {
             errorType: { type: "string", enum: ERROR_TYPES },
             diagnosis: { type: "string", minLength: 1, maxLength: 2000, description: "错在哪、为什么错" },
             bankId: { type: "string", maxLength: 100, description: "这道题来自题库真题时填真题 id" },
+            difficulty: { type: "integer", minimum: 1, maximum: 5, description: "难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴" },
           },
-          required: ["subject", "topic", "question", "learnerAnswer", "errorType", "diagnosis"],
+          required: ["subject", "topic", "question", "learnerAnswer", "errorType", "diagnosis", "difficulty"],
           additionalProperties: false,
         },
         execute: async (_id, input, signal) => {
           guard(signal);
-          const m = addMistake({ ...input, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: context.agent === "practice" ? "练习会话" : "学习模式", chatId: context.chatId });
-          return textResult(`已记进错题本（${m.errorType}：${m.topic}）。现在针对错因讲解，再换题检查。`, { id: m.id });
+          const m = addMistake({ ...input, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: { practice: "练习会话", prober: "测底" }[context.agent] || "教学会话", chatId: context.chatId });
+          changed("score");
+          return textResult(`已记进错题本（${m.errorType}：${m.topic}），对应考点的星记了一次做错（难度 ${m.difficulty || "?"}）。现在按「答错之后」讲清楚，再换题检查。`, { id: m.id });
         },
       });
+      if (context.agent === "prober") return tools;
       tools.push({
         name: "kaoyan_log_paper",
         label: "记录讲题批改",
@@ -458,8 +560,9 @@ exports.activate = (ctx) => {
                   correctAnswer: { type: "string", maxLength: 8000, description: "做错时必填：正确答案与关键步骤" },
                   errorType: { type: "string", enum: ERROR_TYPES, description: "做错时必填" },
                   diagnosis: { type: "string", maxLength: 2000, description: "做错时必填：第一处错在哪一步、为什么错" },
+                  difficulty: { type: "integer", minimum: 1, maximum: 5, description: "难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴" },
                 },
-                required: ["number", "correct", "topic"],
+                required: ["number", "correct", "topic", "difficulty"],
                 additionalProperties: false,
               },
             },
@@ -544,6 +647,9 @@ exports.activate = (ctx) => {
   op("vault.detect", () => ({ vaults: detectObsidianVaults() }));
   // 「AI 自动配置」：固定提示词，不带本机信息，复制给 agent 在任意电脑上配置。
   op("setup.prompt", () => ({ prompt: SETUP_PROMPT }));
+  op("hostPrompts.status", () => hostPrompts.status());
+  op("hostPrompts.apply", () => hostPrompts.apply());
+  op("hostPrompts.revert", () => hostPrompts.revert());
   op("papers.prompt", () => ({ prompt: PAPERS_PROMPT }));
   op("vault.test", (p) => {
     const root = expandHome(p.vaultPath !== undefined ? str(p.vaultPath, 1000) : settings().vaultPath);
@@ -605,6 +711,7 @@ exports.activate = (ctx) => {
     return { total: o.total, sigma: o.sigma, projection: o.projection, review: o.review.slice(0, 8), reviewCount: o.reviewCount, vocab: o.vocab, unsettled: score.unsettled() };
   });
   op("score.unsettled", () => ({ sessions: score.unsettled() }));
+  op("score.focus", (p) => score.focus(p));
   op("score.questions", (p) => score.questionsOf(str(p.leaf, 500), Math.max(1, Math.min(40, Number(p.limit) || 10))));
   op("score.settle", (p) => jobs.start("settle", "结算本次学习", async (j) => {
     const r = await score.settle({ chatId: str(p.chatId, 200), by: "button", ...j });
@@ -612,6 +719,7 @@ exports.activate = (ctx) => {
     return r;
   }));
   op("score.classify", (p) => jobs.start("classify", "AI 归类真题考点", async (j) => { const r = await score.classifyBank({ ...j, force: !!p.force }); changed("score"); return r; }));
+  op("score.rate", (p) => jobs.start("rate", "AI 评定题目难度", async (j) => { const r = await score.rateBank({ ...j, force: !!p.force }); changed("score"); return r; }));
   op("momo.sync", () => jobs.start("momo", "同步墨墨背单词", async () => {
     const r = await refreshMomo(true);
     if (!r) fail("还没填墨墨 token");
@@ -719,12 +827,15 @@ exports.activate = (ctx) => {
     progress?.(answerImgs.length, answerImgs.length + 1, "判分");
     const imgs = [...(m.images || []).map((id) => ({ data: images.get(id) })), ...raw.map((d) => ({ data: d }))];
     const res = await llm.json({
-      system: "你是考研阅卷老师。判断学生这次重做是否正确，按步骤指出问题。输出 JSON：{\"correct\":true/false,\"score\":0-100,\"feedback\":\"批改意见（中文）\"}",
+      system: "你是考研阅卷老师。判断学生这次重做是否正确，按步骤指出问题；顺便按考研视角给这道题评难度档 difficulty（1 基础＝直接套定义或公式；2 简单＝常规变形两三步；3 中档＝考研选择 / 填空常见难度；4 较难＝真题解答题、综合两三个点；5 压轴）。输出 JSON：{\"correct\":true/false,\"score\":0-100,\"feedback\":\"批改意见（中文）\",\"difficulty\":3}",
       text: `题目：${m.question}\n${(m.options || []).map((o) => `${o.key}. ${o.text}`).join("\n")}\n参考答案：${m.correctAnswer || "（无，请自行求解）"}\n上次的错因：${m.errorType}：${m.diagnosis}\n\n这次作答：${answerText || "（见图片中最后几张）"}${m.images?.length ? `\n（前 ${m.images.length} 张图是题目原图）` : ""}${raw.length ? `\n（最后 ${raw.length} 张图是学生手写作答）` : ""}`,
       images: imgs.map((x) => ({ ...x, mimeType: "image/jpeg" })),
       maxTokens: 3000,
       signal,
     });
+    // 题库题交给后台统一评；别的错题没有难度时，用这次批改顺手给的
+    if (m.bankId) score.queueRate([m.bankId]);
+    else if (!m.difficulty && Number.isInteger(res.difficulty) && res.difficulty >= 1 && res.difficulty <= 5) { store.update("mistakes", m.id, { difficulty: res.difficulty }); changed("score"); }
     return { ...res, transcript };
   }));
   op("mistakes.ocr", (p) => jobs.start("ocr", "识别错题照片", async () => {
@@ -793,6 +904,23 @@ exports.activate = (ctx) => {
   // 批量导入整理好的真题文件夹（manifest.json），可断点续传
   const progressFile = "import-progress";
   const readProgress = () => ({ done: [], failed: {}, ...store.value(progressFile, {}) });
+  /** 合并写入：暂停后旧任务手上的文件可能晚一点才做完，不能用它的旧快照覆盖新任务的进度。 */
+  const saveProgressMerged = (st) => {
+    const cur = readProgress();
+    const done = [...new Set([...cur.done, ...st.done])];
+    const failed = { ...cur.failed, ...st.failed };
+    for (const f of st.done) delete failed[f];
+    store.saveValue(progressFile, { ...cur, ...st, done, failed });
+  };
+  /** 清单里的文件各自的状态（进度记录几个文件夹共用，只数这一份的）。 */
+  const folderProgress = (folder) => {
+    let items = [];
+    try { items = JSON.parse(fs.readFileSync(path.join(folder, "manifest.json"), "utf8")).items || []; } catch { items = []; }
+    const st = readProgress();
+    const files = new Set(items.map((it) => it.file));
+    return { total: items.length, done: items.filter((it) => st.done.includes(it.file)).length, failed: Object.fromEntries(Object.entries(st.failed || {}).filter(([f]) => files.has(f))) };
+  };
+  const folderProgressFiles = (folder) => { try { return new Set((JSON.parse(fs.readFileSync(path.join(folder, "manifest.json"), "utf8")).items || []).map((it) => it.file)); } catch { return new Set(); } };
   let batchJob = null;
   // 题库包：导出已识别好的题库给别人，或导入别人的题库包（不用再识别）
   const pack = createPack({ store, imageDir, version: (() => { try { return JSON.parse(fs.readFileSync(path.join(__dirname, "manifest.json"), "utf8")).version; } catch { return ""; } })() });
@@ -802,22 +930,31 @@ exports.activate = (ctx) => {
   op("pack.preview", (p) => pack.previewPack(expandHome(str(p.file, 2000))));
   op("pack.import", (p) => { const r = pack.importPack(expandHome(str(p.file, 2000))); changed("bank"); return r; });
 
+  // 文件夹框默认填上次批量导入用的文件夹（重启后不会跳回真题文件夹）
+  const batchFolder = (p) => expandHome(str(p.folder, 1000)) || expandHome(settings().lastBatchFolder || "") || papersRoot();
   op("bank.batchStatus", (p) => {
-    const folder = expandHome(str(p.folder, 1000)) || papersRoot();
-    let total = 0;
-    try { total = JSON.parse(fs.readFileSync(path.join(folder, "manifest.json"), "utf8")).items.length; } catch { total = 0; }
-    const st = readProgress();
-    return { folder, total, done: st.done.length, failed: st.failed, running: batchJob ? jobs.get(batchJob) : null };
+    const folder = batchFolder(p);
+    return { folder, ...folderProgress(folder), running: batchJob ? jobs.get(batchJob) : null };
   });
-  op("bank.batchImport", (p) => {
+  op("bank.batchPause", () => {
     const running = batchJob && jobs.get(batchJob);
+    if (!running || running.status !== "running") return { ok: false };
+    return jobs.cancel(batchJob);
+  });
+  op("bank.batchImport", async (p) => {
+    let running = batchJob && jobs.get(batchJob);
+    // 刚点了暂停、旧任务还在收尾：等它停下（最多 60 秒）再开新任务
+    for (let i = 0; i < 120 && running?.cancelling; i++) { await new Promise((r) => setTimeout(r, 500)); running = jobs.get(batchJob); }
     if (running && running.status === "running") return running;
-    const folder = needPapers(expandHome(str(p.folder, 1000)) || papersRoot());
-    if (p.reset) store.saveValue(progressFile, { done: [], failed: {} });
-    const job = jobs.start("batch", "批量导入真题", (j) => bank.importManifest({
+    const folder = needPapers(batchFolder(p));
+    if (settings().lastBatchFolder !== folder) saveSettings({ lastBatchFolder: folder });
+    if (p.reset) store.saveValue(progressFile, { ...readProgress(), done: readProgress().done.filter((f) => !folderProgressFiles(folder).has(f)), failed: {} });
+    const job = jobs.start("batch", "批量导入题目", (j) => bank.importManifest({
       folder, ...j,
+      // 每导完一份题目文件：后台把新题归到考点，没评上难度的也补评
+      onFileDone: ({ ids }) => { score.queueClassify(ids); score.queueRate(ids); },
       readProgress,
-      saveProgress: (st) => store.saveValue(progressFile, st),
+      saveProgress: saveProgressMerged,
     }));
     batchJob = job.id;
     return job;
@@ -914,6 +1051,7 @@ exports.activate = (ctx) => {
     let impact = null;
     try { if (before) impact = score.diff(before, score.evaluate(Date.now(), { detail: false })); } catch { impact = null; }
     if (impact) store.update("attempts", attempt.id, { impact: { before: impact.before, after: impact.after, delta: impact.delta, items: impact.items.slice(0, 30) } });
+    score.queueRate(qs.map((q) => q.id));
     const full = qs.map((q) => ({ ...bank.forExam(q, {}), answer: q.answer, analysis: q.analysis, analysisSource: q.analysisSource || "" }));
     return { attemptId: attempt.id, results, total, got, added, questions: full, impact };
   }));

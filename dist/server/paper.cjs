@@ -137,6 +137,7 @@ function createPaper({ ctx, store, llm, pdf, images, bank, addMistake, changed }
         topic: str(it.topic || old?.topic || "", 200),
         errorType: it.correct ? "" : str(it.errorType || "", 50),
         pages: pages.map((p) => p + 1),
+        difficulty: Number.isInteger(it.difficulty) && it.difficulty >= 1 && it.difficulty <= 5 ? it.difficulty : old?.difficulty ?? null,
       };
       row.mistakeId = old?.mistakeId || null;
       if (!row.correct) {
@@ -149,10 +150,11 @@ function createPaper({ ctx, store, llm, pdf, images, bank, addMistake, changed }
           correctAnswer: it.correctAnswer,
           errorType: it.errorType,
           diagnosis: it.diagnosis,
+          difficulty: row.difficulty,
         };
         const existing = row.mistakeId && mistakes.find((m) => m.id === row.mistakeId);
         if (existing) {
-          Object.assign(existing, Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, str(v, 20000)])));
+          Object.assign(existing, Object.fromEntries(Object.entries(fields).filter(([, v]) => v != null && v !== "").map(([k, v]) => [k, typeof v === "number" ? v : str(v, 20000)])));
           if (pageIds.length && !existing.images?.length) existing.images = pageIds;
           store.saveList("mistakes", mistakes);
         } else {

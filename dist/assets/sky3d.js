@@ -20,6 +20,7 @@ const GALAXY_R = 1150;
 const LEVELS = [0.6, 0.8, 1.0];
 const MOD_SHORT = { 马克思主义基本原理: "马原", 毛泽东思想和中国特色社会主义理论体系概论: "毛中特", 习近平新时代中国特色社会主义思想概论: "习思想", 中国近现代史纲要: "史纲", 思想道德与法治: "思修法基", 形势与政策及当代世界经济与政治: "时政", 概率论与数理统计: "概率统计", 计算机组成原理: "组成原理" };
 const KIND_LABEL = { taught: "讲解", practice: "练习", real: "真题" };
+const TIER_NAMES = ["", "基础", "简单", "中档", "较难", "压轴"];
 const SEEN_KEY = "kaoyan.sky3d.seen";
 const MODS_KEY = "kaoyan.sky3d.mods";
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -254,7 +255,7 @@ export function mountScore(ctx, container, signal) {
     else if (level === 2) showChapter(nav.chapter);
     else showLeaf(nav.star);
     flyTo(level);
-    if (level === 3) openPlanets(nav.star); else closePlanets();
+    closePlanets(); // 特写不再画环绕的真题小球：做题直接给这颗星加分
     renderCrumbs(); renderHint();
     root.dataset.level = String(level);
   }
@@ -269,36 +270,10 @@ export function mountScore(ctx, container, signal) {
       el("button", { type: "button", class: `sk-crumb${i === parts.length - 1 ? " sk-on" : ""}`, onclick: fn || undefined }, label)]));
   }
   function renderHint() {
-    reset(hint, ["拖动旋转 · 滚轮远近 · 点一颗星或一条旋臂飞进去", "点一个星座进入 · 点空白处返回", "点一颗星看特写 · 点空白处返回", nav.star?.leaf.vocab ? "这一档的单词在右边 · 点空白处返回" : "环绕的小星是相关真题，亮着的做对过 · 点它开练 · 点空白处返回"][nav.level]);
+    reset(hint, ["拖动旋转 · 滚轮远近 · 点一颗星或一条旋臂飞进去", "点一个星座进入 · 点空白处返回", "点一颗星看特写 · 点空白处返回", nav.star?.leaf.vocab ? "这一档的单词在右边 · 点空白处返回" : "星越亮掌握越好 · 右边是难度阶梯和加分记录 · 点空白处返回"][nav.level]);
   }
 
-  // ── 特写：环绕的真题小球 ─────────────────────────────
-  async function openPlanets(st) {
-    closePlanets();
-    if (!st || st.leaf.vocab) return;
-    const sys = { group: new THREE.Group(), items: [], st, t0: performance.now(), dead: false };
-    sys.group.position.copy(st.pos);
-    scene.add(sys.group);
-    planetSys = sys;
-    let r;
-    try { r = await ctx.call("score.questions", { leaf: st.id, limit: 10 }); } catch { return; }
-    if (sys.dead) return;
-    const rad = starRadius(st.leaf.points);
-    const rr = rng(`pl-${st.id}`);
-    r.items.forEach((q, i) => {
-      const kind = q.done ? (q.lastCorrect ? "good" : "bad") : "todo";
-      const orb = makePlanet(q.id, kind);
-      const pr = rad * (0.16 + 0.02 * Math.min(12, Number(q.score) || 4));
-      const a = rad * (3.4 + i * 0.85), b = a * (0.86 + rr() * 0.12);
-      const tilt = new THREE.Group();
-      tilt.rotation.set((rr() - 0.5) * 0.5, rr() * 6.28, (rr() - 0.5) * 0.35);
-      const orbit = makeOrbit(a, b, 0xcfd6e4);
-      tilt.add(orbit, orb.group);
-      sys.group.add(tilt);
-      orb.hit.userData = { planet: q, kind };
-      sys.items.push({ q, kind, orb, orbit, a, b, pr, phase: rr() * 6.28, w: 0.5 / Math.pow(a / rad, 1.5), delay: 350 + i * 140 });
-    });
-  }
+  // ── 旧版特写里环绕的真题小球（已停用，保留清理逻辑） ──
   function closePlanets() {
     if (!planetSys) return;
     planetSys.dead = true; planetSys.leaving = performance.now();
@@ -705,9 +680,9 @@ export function mountScore(ctx, container, signal) {
     if (l.vocab) return [`掌握 ${pct(l.m)}`, l.m >= 0.8 ? "sk-st-good" : l.m >= 0.4 ? "sk-st-mid" : "sk-st-low"];
     if (!l.n) return ["未点亮", "sk-st-off"];
     if (l.due) return ["该复习", "sk-st-due"];
-    if (l.real && l.m >= 0.75) return ["真题稳定", "sk-st-good"];
-    if (l.real) return ["做过真题", "sk-st-mid"];
-    if (l.m >= 0.3) return ["练习中", "sk-st-mid"];
+    if (l.top >= 4 && l.m >= 0.7) return [`${TIER_NAMES[l.top]}题过关`, "sk-st-good"];
+    if (l.top) return [`做对到${TIER_NAMES[l.top]}`, "sk-st-mid"];
+    if (l.m >= 0.1) return ["听过讲解", "sk-st-low"];
     return ["刚接触", "sk-st-low"];
   }
   const orbDot = (l) => {
@@ -778,16 +753,17 @@ export function mountScore(ctx, container, signal) {
     openPanel(
       head(`${SUBJ[s.key].short} · ${hit.c.name}`, l.name, l.score, l.points, el("span", `sk-st ${cls}`, stt)),
       el("div", "sk-stats",
-        el("div", "sk-stat", el("span", null, "掌握度"), el("b", null, pct(l.m)), el("small", null, l.n ? `${l.n} 条证据${l.real ? ` · 真题 ${l.real}` : ""}` : "还没有证据")),
+        el("div", "sk-stat", el("span", null, "掌握度"), el("b", null, pct(l.m)), el("small", null, l.n ? `${l.n} 道题 / 记录${l.top ? ` · 做对过最难：${TIER_NAMES[l.top]}` : ""}` : "还没有记录")),
         el("div", "sk-stat", el("span", null, "记忆保持"), el("b", null, l.last ? pct(l.R) : "—"), el("small", null, l.last ? `稳定约 ${Math.round(l.S)} 天` : "还没学过")),
         el("div", "sk-stat", el("span", null, "历年真题"), el("b", null, `${Math.round(l.realCount || 0)}`), el("small", null, "道左右考到"))),
       el("p", "sk-note", l.last ? (l.due ? `上次学是 ${ago(l.last)}，记忆掉到 ${pct(l.R)}，该复习了。` : `上次学是 ${ago(l.last)}，约 ${fmtDate(l.dueAt)} 该复习。`) + ` 不复习：30 天后约 ${f1(forecast(30))} 分，90 天后约 ${f1(forecast(90))} 分。` : "在会话里学过并结算、或做对练习题和真题后，这颗星会亮起来。"),
       actions,
+      tierLadder(l),
       el("section", "sk-sec", el("h4", "sk-h", "相关真题"), qinfo),
       el("section", "sk-sec", el("h4", "sk-h", "分数来源"),
         l.evidence?.length ? el("div", "sk-ev", ...l.evidence.slice(0, 20).map((e) => el("div", "sk-ev-row",
           el("span", "sk-ev-date", fmtDate(e.at).slice(5)),
-          el("span", `sk-kind sk-k-${e.kind}`, KIND_LABEL[e.kind]),
+          el("span", `sk-kind sk-k-${e.kind}`, `${KIND_LABEL[e.kind]}${e.tier && e.kind !== "taught" ? `·${e.tier}` : ""}`),
           el("span", "sk-ev-label", e.label, e.note ? el("small", null, e.note) : null),
           el("b", e.delta >= 0 ? "sk-up" : "sk-down", `${e.delta >= 0 ? "+" : ""}${e.delta.toFixed(2)}`)))) : el("p", "sk-note", "还没有记录。")));
     put(actions, btn("复制学习开场白", async () => {
@@ -799,8 +775,31 @@ export function mountScore(ctx, container, signal) {
       actions.prepend(btn("用真题练这个考点", () => practiceIds(r.items.slice(0, 8).map((x) => x.id), s.key, `真题 · ${l.name}`), "sk-btn sk-btn-primary"));
       reset(qinfo, el("p", "sk-note", `题库里 ${r.total} 道，做过 ${r.done} 道。`),
         ...r.items.map((q) => { const kind = q.done ? (q.lastCorrect ? "good" : "bad") : "todo"; return el("button", { type: "button", class: "sk-row-btn sk-q", onclick: () => showPlanet(q, kind) },
-          el("i", `sk-orb sk-orb-${kind}`), el("span", "sk-row-name", `${q.paper} 第${q.number}题`), el("span", "sk-row-num", `${q.type} · ${q.score || "?"}分`)); }));
+          el("i", `sk-orb sk-orb-${kind}`), el("span", "sk-row-name", `${q.paper} 第${q.number}题`), el("span", "sk-row-num", `${TIER_NAMES[q.d] || ""} · ${q.type} · ${q.score || "?"}分`)); }));
     }, () => reset(qinfo));
+  }
+  /** 难度阶梯：每档有掌握度上限；超过某档上限后，这一档的题几乎不再加分。 */
+  function tierLadder(l) {
+    const tiers = data.tiers || [];
+    if (!tiers.length) return null;
+    const m = l.m || 0;
+    const next = tiers.find((T) => T.cap > m + 0.03) || tiers[tiers.length - 1];
+    const tip = !l.n ? "从「基础」「简单」题开始做，每做对一题这颗星就亮一点。"
+      : m >= 0.97 ? "已经满了：各档的题都做对过。之后注意隔一段时间复习。"
+      : `现在掌握 ${pct(m)}：${next.d > 1 ? `${tiers.slice(0, next.d - 1).map((T) => T.name).join("、")}题已经加不了多少分，` : ""}做「${next.name}」及以上的题才能继续涨。`;
+    return el("section", "sk-sec",
+      el("h4", "sk-h", "难度阶梯"),
+      el("p", "sk-note", tip),
+      el("div", "sk-tiers", ...tiers.map((T) => {
+        const lo = T.d > 1 ? tiers[T.d - 2].cap : 0;
+        const fill = clamp((m - lo) / (T.cap - lo), 0, 1);
+        const cls = fill >= 0.97 ? " sk-tier-full" : T.d === next.d ? " sk-tier-now" : "";
+        return el("div", `sk-tier${cls}`,
+          el("span", "sk-tier-name", T.name, el("small", null, `到 ${Math.round(T.cap * 100)}%`)),
+          el("span", "sk-tier-bar", el("i", { style: `width:${fill * 100}%` })),
+          el("span", "sk-tier-tag", (l.top || 0) >= T.d ? "做对过" : T.d === next.d ? "下一步" : ""),
+          el("small", "sk-tier-desc", T.desc));
+      })));
   }
   function showPlanet(q, kind) {
     const st = nav.star;
@@ -810,9 +809,10 @@ export function mountScore(ctx, container, signal) {
       el("div", "sk-stats",
         el("div", "sk-stat", el("span", null, "题型"), el("b", null, q.type), el("small", null, "")),
         el("div", "sk-stat", el("span", null, "分值"), el("b", null, `${q.score || "?"}`), el("small", null, "分")),
-        el("div", "sk-stat", el("span", null, "状态"), el("b", null, kind === "good" ? "做对过" : kind === "bad" ? "做错过" : "没做"), el("small", null, kind === "good" ? "亮着" : kind === "bad" ? "泛着暖光" : "暗的"))),
+        el("div", "sk-stat", el("span", null, "难度"), el("b", null, TIER_NAMES[q.d] || "—"), el("small", null, q.d ? `第 ${q.d} 档` : "")),
+        el("div", "sk-stat", el("span", null, "状态"), el("b", null, kind === "good" ? "做对过" : kind === "bad" ? "做错过" : "没做"), el("small", null, ""))),
       el("div", "sk-actions", btn("开练这道", () => practiceIds([q.id], (st?.id || "").split("/")[0], `${q.paper} 第${q.number}题`), "sk-btn sk-btn-primary")),
-      el("p", "sk-note", "在快练里作答判分后，这颗小星和中间的星都会跟着更新。"));
+      el("p", "sk-note", "在快练里作答判分后，会按这道题的难度给考点的星加分（或做错时扣一点）。"));
   }
   function showVocab({ l, c }) {
     const v = l.vocab;
@@ -862,8 +862,19 @@ export function mountScore(ctx, container, signal) {
         el("div", "sk-legend-row", el("span", "sk-legend-orbs", el("i", { class: "sk-orb sk-orb-due", style: "--g:.5" })), el("span", null, "外圈琥珀色光环＝记忆在掉，该复习")),
         el("div", "sk-legend-row", el("span", "sk-legend-orbs", el("i", { class: "sk-orb sk-orb-s", style: "--g:.6" }), el("i", { class: "sk-orb sk-orb-l", style: "--g:.6" })), el("span", null, "球越大，这个考点分值越高")),
         el("div", "sk-legend-row", el("span", "sk-legend-orbs sk-legend-dust"), el("span", null, "背景星跟着所在章节变亮；模块到 60% / 80% / 100% 时那片天空放一圈光波"))),
-      el("p", "sk-pop-p", "四条旋臂是四科，旋臂上的星座是章节，星座里的星是考点。每个考点的分＝分值 × 掌握度 × 记忆保持。掌握度来自会话结算（讲解最多 40%、练习最多 70%）和真题（最多 90%，隔 3 天再做对到 100%）；不复习会慢慢掉，最多掉到 60%。"),
+      el("p", "sk-pop-p", "四条旋臂是四科，旋臂上的星座是章节，星座里的星是考点。每个考点的分＝分值 × 掌握度 × 记忆保持。每做完一道题（真题、习题、会话里的题、错题重做、讲题批改），就按这道题的难度给对应考点的星加分：难度分 5 档（基础 30% · 简单 50% · 中档 70% · 较难 85% · 压轴 100%），每档有掌握度上限。刚开始简单题也能加分；分越高，简单题加得越少，要更难的题才能继续涨，各档都做对过才能满。做错会往回掉一点（简单题做错掉得多）。只听讲解按「基础」档算。不复习会慢慢掉，最多掉到 60%。"),
       el("div", "sk-pop-actions", btn("预览全部点亮", startPreview, "sk-btn sk-btn-primary"), btn("刷新数据", () => { closePop(); load(true); }, "sk-btn")),
+      el("details", "sk-pop-adv",
+        el("summary", null, "高级 · 题目难度"),
+        el("p", "sk-pop-p", `每道题库题的难度决定做对它能加多少分。不用先评：做到还没评过的题时（快练 / 模考交卷、会话里取题和记录、错题重做），AI 会在后台自动评；没评到之前按题型和位置估（选择 / 填空中档、解答题较难、每份卷子最后两道解答题压轴）。分数每次都按全部记录重算，所以晚评的题，以前的加分也会跟着更新。这个按钮是一次把整个题库评完（AI 选题时就能按难度挑题）：现在评过 ${fi.diffCount || 0} / ${fi.bankTotal || "?"} 道，每 30 道一次调用，可以中途停下、下次接着来。用的是「便宜」模型槽（设置 → 模型）。`),
+        el("div", "sk-pop-actions", btn(fi.diffCount ? `已评 ${fi.diffCount} 道 · 补评新题` : "用 AI 评定难度", async () => {
+          try {
+            const job = await ctx.call("score.rate", {});
+            const msg = el("p", "sk-pop-p", "开始…"); reset(out, msg);
+            const r = await waitJob(ctx, job, (j) => { msg.textContent = `${j.message || "评定中"}${j.total ? `（${j.done}/${j.total}）` : ""}`; });
+            reset(out, el("p", "sk-pop-p", `完成：${r.rated}/${r.total} 道已评。`)); load(true);
+          } catch (err) { reset(out, errorBox(err)); }
+        }, "sk-btn"))),
       el("details", "sk-pop-adv",
         el("summary", null, "高级 · 真题考点归类"),
         el("p", "sk-pop-p", `每道真题要先归到考点上，才能算出每个考点值多少分、刷题时给哪颗星加分。现在按题目自带的考点标签做关键词匹配（${fi.mapped}/${fi.total} 道归上了），偶尔会归错；让 AI 逐题看题干重新归一遍会更准，分值和加分都会跟着变准。约 70 次便宜模型调用，可以中途停下、下次接着来。`),

@@ -251,7 +251,7 @@ function buildFrame(bankItems, aiMap = {}) {
   let mapped = 0;
   let total = 0;
   for (const q of bankItems) {
-    if (q.source === "AI生成" || !["数学", "408"].includes(q.subject)) continue;
+    if (q.source === "AI生成" || q.source === "习题" || !["数学", "408"].includes(q.subject)) continue;
     total++;
     const hits = mapQ(q);
     if (!hits.length) continue;

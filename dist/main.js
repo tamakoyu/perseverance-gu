@@ -122,6 +122,25 @@ export function activate(ctx) {
           ta.focus(); ta.select();
         } catch (err) { reset(promptBox, errorBox(err)); }
       };
+      const hostBox = el("div", "ky-card");
+      const renderHost = (st) => {
+        const stale = st.items.filter((x) => x.hostChanged);
+        const edited = st.items.filter((x) => x.edited);
+        reset(hostBox,
+          el("div", "ky-row", el("strong", null, "考研版宿主提示词"), el("span", st.active ? "ky-ok" : "ky-muted", st.active ? "✓ 已应用" : st.applied ? "部分生效（可能有开关被关掉了）" : "未应用（用的是宿主原版）")),
+          el("p", "ky-hint", "LearnHarness 自带的教学方法是「从最底层的道理一步步推」，出题偏向找理解漏洞，不太贴考研。应用后会用宿主自带的「提示词覆盖」功能替换下面几段（不改 app 本身，宿主更新也不会被冲掉）；你原来的覆盖文件和开关会先备份，点「恢复原版」原样还原。新开的会话生效。"),
+          el("ul", "ky-list", ...st.items.map((x) => el("li", null, `${x.title}`, el("span", "ky-muted", `　${x.key}${x.installed && x.on ? " ✓" : x.installed ? "（开关关着）" : ""}`)))),
+          stale.length ? el("div", "ky-error", `宿主更新了 ${stale.map((x) => x.key).join("、")} 的原版内容，考研版可能需要跟着更新。`) : null,
+          edited.length ? el("div", "ky-muted", `${edited.map((x) => x.key).join("、")} 在设置 → 提示词里被改过；再点「应用」会换回考研版。`) : null,
+          el("div", "ky-row",
+            btn(st.active ? "重新应用" : "应用考研版宿主提示词", async () => {
+              try { renderHost(await ctx.call("hostPrompts.apply")); toast(root, "已应用，新开的会话生效"); } catch (err) { toast(root, err.message, "error"); }
+            }, "ky-btn ky-btn-primary"),
+            st.applied ? btn("恢复原版", async () => {
+              try { renderHost(await ctx.call("hostPrompts.revert")); toast(root, "已恢复宿主原版提示词"); } catch (err) { toast(root, err.message, "error"); }
+            }, "ky-btn ky-btn-ghost") : null));
+      };
+      ctx.call("hostPrompts.status").then(renderHost, (err) => reset(hostBox, errorBox(err)));
       put(root, 
         field("Obsidian 考研仓库路径", vault, "导出笔记、读取周计划、讲课检索都用这个仓库；填仓库根目录（含 .obsidian 的那层），支持 ~ 开头"),
         el("div", "ky-row", btn("自动检测 Obsidian 仓库", detect, "ky-btn ky-btn-ghost"), btn("测试连接", testConn, "ky-btn ky-btn-ghost"), btn("AI 自动配置连接", showPrompt, "ky-btn ky-btn-ghost")),
@@ -150,6 +169,7 @@ export function activate(ctx) {
             } catch (err) { reset(out, errorBox(err)); }
           })),
         out,
+        hostBox,
         el("p", "ky-hint", "模型：普通任务用「强」槽，生词释义用「便宜」槽，照片 / OCR 用「视觉」槽（设置 → 模型）。"));
     }, (err) => put(root, errorBox(err)));
     return () => reset(container);

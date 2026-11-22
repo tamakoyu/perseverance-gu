@@ -30,16 +30,30 @@ export function mountBank(ctx, container, signal) {
       return;
     }
     put(body, missingBox(null), figureBox(null));
+    const card = (p, title) => el("button", { type: "button", class: "ky-paper", title: p.paper, onclick: () => { current = p.paper; render(); } },
+      el("b", null, title), el("span", "ky-muted", `${p.count} 题 · ${p.answered} 题有答案`));
     for (const s of SUBJECTS) {
-      const list = papers.filter((p) => p.subject === s);
-      if (!list.length) continue;
-      put(body, el("div", "ky-group", s));
-      const grid = el("div", "ky-paper-grid");
-      for (const p of list) {
-        put(grid, el("button", { type: "button", class: "ky-paper", onclick: () => { current = p.paper; render(); } },
-          el("b", null, p.paper), el("span", "ky-muted", `${p.count} 题 · ${p.answered} 题有答案`)));
+      const real = papers.filter((p) => p.subject === s && p.source !== "习题");
+      if (real.length) {
+        put(body, el("div", "ky-group", `${s} · 真题`));
+        put(body, el("div", "ky-paper-grid", ...real.map((p) => card(p, p.paper))));
       }
-      put(body, grid);
+      // 习题书：每本书一组，书里按「篇·科目」或「科目·题型」分小组，格子里只写章节 / 主题名
+      const books = [...new Set(papers.filter((p) => p.subject === s && p.source === "习题").map((p) => p.book))];
+      for (const book of books) {
+        const list = papers.filter((p) => p.subject === s && p.source === "习题" && p.book === book);
+        const sub = new Map();
+        for (const p of list) {
+          const rest = p.paper.replace(/^[^·]*·/, ""); // 去掉书名前缀「张宇1000题·」「660题·」
+          const sp = rest.indexOf(" ");
+          const [g, title] = sp > 0 ? [rest.slice(0, sp), rest.slice(sp + 1)] : ["", rest];
+          if (!sub.has(g)) sub.set(g, []);
+          sub.get(g).push(card(p, title));
+        }
+        const total = list.reduce((a, p) => a + p.count, 0), answered = list.reduce((a, p) => a + p.answered, 0);
+        put(body, el("div", "ky-group", `${book || "习题"} · 习题`, el("span", "ky-muted ky-group-sub", `${list.length} 份 · ${total} 题 · ${answered} 题有答案`)));
+        for (const [g, cards] of sub) put(body, g ? el("div", "ky-subgroup", g) : null, el("div", "ky-paper-grid", ...cards));
+      }
     }
   }
 
@@ -51,7 +65,7 @@ export function mountBank(ctx, container, signal) {
       const ana = pick(m.byPaper), noAns = pick(m.noAnswerByPaper);
       const nAna = Object.values(ana).reduce((a, b) => a + b, 0), nAns = Object.values(noAns).reduce((a, b) => a + b, 0);
       if (!nAna && !nAns) return;
-      const list = (o) => Object.entries(o).filter(([, v]) => v).map(([k, v]) => `${k} ${v} 题`).join("、");
+      const list = (o) => { const e = Object.entries(o).filter(([, v]) => v); return e.slice(0, 6).map(([k, v]) => `${k} ${v} 题`).join("、") + (e.length > 6 ? ` 等 ${e.length} 份` : ""); };
       const parts = [];
       if (nAns) parts.push(`${nAns} 道题没有答案${paper ? "" : `（${list(noAns)}）`}`);
       if (nAna) parts.push(`${nAna} 道题有答案、没有解析${paper ? "" : `（${list(ana)}）`}`);
@@ -99,7 +113,7 @@ export function mountBank(ctx, container, signal) {
 
   function questionCard(q, { editable = true } = {}) {
     const det = el("details", "ky-card");
-    put(det, el("summary", "ky-sum", el("span", "ky-tag", q.type), el("b", null, `第 ${q.number || "?"} 题`), el("span", "ky-muted", `${q.score || ""} 分 · ${(q.topics || []).join("、")}${q.answer ? "" : " · 缺答案"}${q.source === "AI生成" ? " · AI 生成" : ""}`)));
+    put(det, el("summary", "ky-sum", el("span", "ky-tag", q.type), el("b", null, `第 ${q.number || "?"} 题`), el("span", "ky-muted", `${q.score || ""} 分 · ${(q.topics || []).join("、")}${q.answer ? "" : " · 缺答案"}${q.source === "AI生成" ? " · AI 生成" : q.source === "习题" ? " · 习题" : ""}`)));
     det.addEventListener("toggle", () => {
       if (!det.open || det.dataset.filled) return;
       det.dataset.filled = "1";
@@ -232,15 +246,20 @@ export function mountBank(ctx, container, signal) {
 
   function renderBatch() {
     const box = el("section", "ky-card");
+    const pauseBtn = btn("暂停", async () => {
+      try { await ctx.call("bank.batchPause"); toast(root, "正在暂停：手上这几页识别完就停，已完成的文件不会重做"); } catch (err) { toast(root, err.message, "error"); }
+    }, "ky-btn ky-btn-ghost");
+    pauseBtn.style.display = "none";
     const folder = el("input", { class: "ky-input" });
     const status = el("div");
     const out = el("div");
     const watch = async (job) => {
       try {
         const r = await runJob(ctx, out, () => Promise.resolve(job), "批量导入");
-        reset(out, el("div", "ky-ok", `✓ 本次完成 ${r.files} 个文件：新增 ${r.added} 题，更新 ${r.updated} 题，合并答案 ${r.answered} 题。总进度 ${r.done}/${r.total}。`),
+        reset(out, el("div", "ky-ok", r.files || r.failed.length ? `✓ 本次完成 ${r.files} 个文件：新增 ${r.added} 题，更新 ${r.updated} 题，合并答案 ${r.answered} 题。总进度 ${r.done}/${r.total}。` : `✓ 这个文件夹（${folder.value}）已经全部导入完了（${r.done}/${r.total}）。要导别的文件夹，先把上面的路径改掉。`),
           r.failed.length ? el("div", "ky-error", `失败 ${r.failed.length} 个（再点「继续」会重试）：\n${r.failed.join("\n")}`) : null);
-      } catch (err) { reset(out, errorBox(err)); }
+      } catch (err) { reset(out, /已取消/.test(err.message) ? el("div", "ky-muted", "已暂停。点「开始 / 继续」会从没做完的文件接着导。") : errorBox(err)); }
+      pauseBtn.style.display = "none";
       refresh();
     };
     const promptBox = el("div");
@@ -267,16 +286,18 @@ export function mountBank(ctx, container, signal) {
         const failed = Object.keys(s.failed || {}).length;
         reset(status, el("div", "ky-muted", s.total ? `进度：${s.done}/${s.total} 个文件已导入${failed ? `，${failed} 个失败待重试` : ""}` : "这个文件夹里没有 manifest.json"));
         if (s.running?.status === "running" && !out.firstChild) watch(s.running);
+        pauseBtn.style.display = s.running?.status === "running" ? "" : "none";
       } catch (err) { reset(status, errorBox(err)); }
     };
     put(box,
-      el("h3", "ky-h3", "批量导入整理好的真题"),
+      el("h3", "ky-h3", "批量导入整理好的文件夹（真题 / 习题书）"),
       el("p", "ky-muted", "按文件夹里的 manifest.json 逐个导入（每份 PDF 渲染成图片，用视觉模型识别，3 页并行）。先导题目、再导解析并按题号合并答案。可以随时关掉，已完成的文件不会重做，再点「开始 / 继续」会接着导。"),
       field("文件夹", folder), speedRow(), status, promptBox,
       el("div", "ky-row",
         btn("开始 / 继续", async () => {
-          try { watch(await ctx.call("bank.batchImport", { folder: folder.value })); } catch (err) { reset(out, errorBox(err)); }
+          try { reset(out, el("div", "ky-muted", "准备中…")); const job = await ctx.call("bank.batchImport", { folder: folder.value }); reset(out); pauseBtn.style.display = ""; watch(job); } catch (err) { reset(out, errorBox(err)); }
         }, "ky-btn ky-btn-primary"),
+        pauseBtn,
         btn("AI 整理真题", showPrompt, "ky-btn ky-btn-ghost"),
         btn("清空进度从头导", async () => {
           if (!confirm("清空导入进度并从头开始？（已导入的题会按题号更新，不会重复）")) return;

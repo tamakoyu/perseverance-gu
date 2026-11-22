@@ -11,6 +11,10 @@ function transcriptText(record, max = 60000) {
       if (p.type === "text") return p.text;
       if (p.type === "toolCall") {
         const a = p.arguments || {};
+        // 逐题记录过的题单独计分，标清楚，结算时不要再算一遍
+        if (p.name === "kaoyan_record_question") return `【已逐题记录·做对】${a.topic || ""}（难度 ${a.difficulty ?? "?"}·${a.result || ""}）${a.question ? `：${String(a.question).slice(0, 200)}` : ""}`;
+        if (p.name === "kaoyan_log_mistake") return `【已逐题记录·做错】${a.topic || ""}（难度 ${a.difficulty ?? "?"}·${a.errorType || ""}）：${String(a.question || "").slice(0, 300)}`;
+        if (p.name === "kaoyan_bank_record") return `【已逐题记录·题库原题】${a.correct ? "做对" : "做错"}${a.difficulty ? `（难度 ${a.difficulty}）` : ""}`;
         const q = a.question || a.prompt || a.stem || a.text;
         if (q) return `【${p.name}】${typeof q === "string" ? q : JSON.stringify(q)}${a.options ? `\n选项：${JSON.stringify(a.options)}` : ""}`;
         if (p.name === "probe_done" || p.name === "kaoyan_study_report") return `【${p.name}】${JSON.stringify(a).slice(0, 3000)}`;

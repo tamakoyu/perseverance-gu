@@ -6,9 +6,15 @@ const { nowIso, fail } = require("./util.cjs");
 const BASE = "https://open.maimemo.com/open/api/v1/memo/study";
 const DAY = 86400000;
 
+// 墨墨开放接口有频率限制：每次请求之间至少隔 400ms；被限流（Too many request）时等久一点再试
+let lastCall = 0;
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 async function call(token, name, body, signal) {
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
+    const wait = lastCall + 400 - Date.now();
+    if (wait > 0) await pause(wait);
+    lastCall = Date.now();
     try {
       const res = await fetch(`${BASE}/${name}`, {
         method: "POST",
@@ -23,13 +29,43 @@ async function call(token, name, body, signal) {
     } catch (err) {
       if (err.fatal || signal?.aborted) throw err;
       lastErr = err;
-      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      const limited = /too many|rate|429/i.test(err.message);
+      await pause(limited ? [15000, 45000, 0][attempt] : 1500 * (attempt + 1));
     }
   }
   throw lastErr;
 }
 
 const iso = (t) => new Date(t).toISOString();
+
+/**
+ * 按上次同步的「下次学习日期」分布直接划区间拉全部记录（每段约 600 条，一次同步约 6 个请求）。
+ * 某段拉回来太多（接近 1000 条上限）或报错，就对半拆开再拉。没有上次的数据时用下面的老办法（先数再拉，约 30 个请求）。
+ */
+async function fetchPlanned(token, prevWords, signal) {
+  const ts = prevWords.map((w) => Date.parse(w.next)).filter((t) => t).sort((a, b) => a - b);
+  if (ts.length < 50) return null;
+  const LO = Date.UTC(2000, 0, 1), HI = Date.UTC(2100, 0, 1);
+  const cuts = [];
+  for (let i = 600; i < ts.length; i += 600) cuts.push(Math.floor((ts[i - 1] + ts[i]) / 2));
+  const edges = [LO, ...cuts, HI];
+  const out = new Map();
+  const grab = async (a, b, depth) => {
+    let r = null;
+    try { r = await call(token, "query_study_records", { limit: 1000, next_study_date: { start: iso(a), end: iso(b) } }, signal); }
+    catch (err) { if (err.fatal || signal?.aborted || depth >= 8 || b - a <= DAY) throw err; }
+    const recs = r?.records || null;
+    if ((!recs || recs.length >= 950) && depth < 8 && b - a > DAY) {
+      const mid = a + Math.floor((b - a) / 2);
+      await grab(a, mid, depth + 1);
+      await grab(mid + 1, b, depth + 1);
+      return;
+    }
+    for (const x of recs || []) out.set(x.voc_id, x);
+  };
+  for (let i = 0; i < edges.length - 1; i++) await grab(i ? edges[i] + 1 : edges[i], edges[i + 1], 0);
+  return { records: [...out.values()], total: out.size };
+}
 
 /** 按「下次学习日期」分段拉全部学习记录（单次请求太大墨墨会报内部错误，所以每段控制在 800 条内）。 */
 async function fetchAllRecords(token, signal) {
@@ -68,19 +104,30 @@ function retention(w, now = Date.now()) {
 function createMomo({ store, getToken }) {
   const cache = () => store.value("momo", { at: null, words: [], progress: null, error: "" });
 
+  const sameProgress = (a, b) => !!a && !!b && a.finished === b.finished && a.total === b.total && a.study_time === b.study_time;
   async function sync({ signal, force = false } = {}) {
     const token = getToken();
     if (!token) return { ...cache(), error: "还没填墨墨 token" };
     const c = cache();
-    if (!force && c.at && Date.now() - Date.parse(c.at) < 3 * 3600000 && c.words.length) return c;
-    if (!force && c.failedAt && Date.now() - Date.parse(c.failedAt) < 30 * 60000) return c; // 刚失败过，半小时内不再自动重试
+    const age = (t) => (t ? Date.now() - Date.parse(t) : Infinity);
+    if (!force && c.failedAt && age(c.failedAt) < 30 * 60000 && age(c.failedAt) < age(c.at)) return c; // 刚失败过，半小时内不再自动重试
+    let prog = null;
+    if (!force && c.words.length) {
+      // 10 分钟内看过就不再问；否则先用「今日进度」（1 个请求）判断背过新的没有，没变化且不到 6 小时就不用整份同步
+      if (age(c.checkedAt || c.at) < 10 * 60000) return c;
+      try { prog = (await call(token, "get_study_progress", {}, signal))?.progress || null; } catch { prog = null; }
+      if (prog && sameProgress(prog, c.progress) && age(c.at) < 6 * 3600000) {
+        const v = { ...c, checkedAt: nowIso() };
+        store.saveValue("momo", v);
+        return v;
+      }
+    }
     try {
-      const [{ records }, prog] = await Promise.all([
-        fetchAllRecords(token, signal),
-        call(token, "get_study_progress", {}, signal).catch(() => null),
-      ]);
+      const planned = await fetchPlanned(token, c.words || [], signal).catch((err) => { if (err.fatal) throw err; return null; });
+      const { records } = planned || (await fetchAllRecords(token, signal));
+      if (!prog) prog = (await call(token, "get_study_progress", {}, signal).catch(() => null))?.progress || null;
       const words = records.map((x) => ({ s: x.voc_spelling, first: x.first_study_date || null, last: x.last_study_date || null, next: x.next_study_date || null, resp: x.last_response || "", n: x.study_count || 0, stick: (x.tags || []).includes("STICKING") }));
-      const value = { at: nowIso(), words, progress: prog?.progress || null, error: "" };
+      const value = { at: nowIso(), checkedAt: nowIso(), words, progress: prog || null, error: "" };
       store.saveValue("momo", value);
       return value;
     } catch (err) {

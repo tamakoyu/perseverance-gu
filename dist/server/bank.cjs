@@ -19,7 +19,8 @@ const TRANSCRIBE_SYSTEM = `你是试卷转写员。把这一页图片**逐字**�
 - 保留原题号、大题标题（如「一、选择题：1～10 小题…」）、【答案】【解析】【详解】等标记，原样照抄。
 - 选择题每个选项单独一行，写成 (A) …、(B) …。
 - 图（函数图像、几何图、树、电路、流程图等）写成「[图：用一两句话描述图里有什么]」；表格写成 Markdown 表格。
-- 页眉页脚、水印、广告、二维码、「公众号」之类的文字不要抄。
+- 页眉页脚、页码、书名页眉（如「660题」「张宇考研数学题源探析经典1000题」）、水印、广告、二维码、「配套课程公众号」「永久联系微信」「刷题小程序」之类的文字不要抄。
+- 习题书的版式文字不要抄：每题下方的「目标分」「必做」「计算 / 概念 / 技巧」「笔记区」「答题收获」及其勾选框（核心结论、易错细节、特例反例、知识盲区）、「答题区」「考点提示」。只有题目旁印的难度星级保留成单独一行「【难度★★】」（几颗星就写几颗）。
 - 不要省略任何题目文字，不要加自己的评论。只输出转写结果。`;
 
 const EXTRACT_SYSTEM = `你是考研试卷录入员。输入是一份试卷（或其中一段）的完整文字转写，页与页之间有 <!-- 第N页 --> 标记。把它逐题拆成结构化数据。规则：
@@ -33,10 +34,23 @@ const EXTRACT_SYSTEM = `你是考研试卷录入员。输入是一份试卷（�
 - hasFigure：题目里有「[图：…]」时为 true，并保留图的文字描述在 stem 里。page：这道题开始所在的页码（数字）。
 - 英语阅读/完形/新题型：每道小题单独一项；同一篇文章用相同的 materialKey（如 "Text1"），文章原文放在该篇第一道小题的 material 字段，其余小题 material 留空。
 - topics：1–3 个考点名（中文，如「反常积分」「二叉树的遍历」「细节题」）。
+- difficulty：按考研考生视角给这道题评难度档（整数 1–5）：1 基础＝直接套定义或公式，一两步；2 简单＝常规变形两三步；3 中档＝考研选择 / 填空常见难度，有一个陷阱或要选对方法；4 较难＝真题解答题、综合两三个考点；5 压轴＝需要构造或较深的思路。题目旁印了「【难度★…】」的，以星级为主要参考（★→1–2，★★→2，★★★→3，★★★★ 及以上→4），再结合题目本身调整。【难度…】这一行不要放进 stem。
 - 1987–1996 年的老数学卷分「试卷 I」和「试卷 II」（试卷 II 是另一类考生做的，大多写着「同试卷 I 第X题」）：**只录入试卷 I 的题**，「(试卷 II)」标题之后的内容全部跳过，不要输出。答案册里试卷 II 的答案也跳过。
 - 段首如果是某道题的后半截、你看不到它的题号，直接忽略（它会在相邻段里完整出现）；段尾不完整的题也照样输出，能写多少写多少。
 - 如果这份内容只有答案和解析（答案册），只输出 answers：[{"number":"1","answer":"…","analysis":"…"}]。
-输出 JSON：{"questions":[{"number","type","stem","options","answer","analysis","score","topics","hasFigure","page","material","materialKey"}],"answers":[]}`;
+输出 JSON：{"questions":[{"number","type","stem","options","answer","analysis","score","topics","difficulty","hasFigure","page","material","materialKey"}],"answers":[]}`;
+
+// 水印、广告、习题书版式文字：转写时已经让模型跳过，这里再按规则清一遍残留
+const JUNK_LINE = /(公[众氽欢]号|永久联[系慈泰]|微[信售怎][:：]?\s*\d{5,}|刷题小程序|云上印|答题收获|答题区|笔记区|目标分\s*[(（]?\d|[口□☐]\s*(核心结论|易错细节|特例反例|知识盲区))/;
+function scrub(text) {
+  return String(text || "")
+    .split("\n")
+    .filter((line) => !JUNK_LINE.test(line))
+    .join("\n")
+    .replace(/【难度[★☆*＊\s]*】/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 function normalizeChoice(s) {
   return String(s || "").toUpperCase().replace(/[^A-G]/g, "").split("").sort().join("");
@@ -58,10 +72,10 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
       year: meta.year ? Number(meta.year) : null,
       number: String(q.number ?? ""),
       type,
-      stem: String(q.stem || "").trim(),
-      options: Array.isArray(q.options) ? q.options.filter((o) => o && o.key).map((o) => ({ key: String(o.key).trim().toUpperCase(), text: String(o.text || "").replace(/^\s*[(（]?[A-G][)）.．、]\s*/, "") })) : [],
-      answer: String(q.answer || ""),
-      analysis: String(q.analysis || ""),
+      stem: scrub(q.stem),
+      options: Array.isArray(q.options) ? q.options.filter((o) => o && o.key).map((o) => ({ key: String(o.key).trim().toUpperCase(), text: scrub(String(o.text || "").replace(/^\s*[(（]?[A-G][)）.．、]\s*/, "")) })) : [],
+      answer: scrub(q.answer),
+      analysis: scrub(q.analysis),
       score: Number(q.score) || DEFAULT_SCORE[subject]?.[type] || 0,
       topics: Array.isArray(q.topics) ? q.topics.map(String).slice(0, 3) : [],
       material: String(q.material || ""),
@@ -69,6 +83,9 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
       hasFigure: !!q.hasFigure,
       images: [],
       source: meta.source || "导入",
+      ...(meta.book ? { book: String(meta.book) } : {}),
+      // 拆题时模型给的难度，写入题库时转存到难度表（不留在题目上）
+      ...(Number.isInteger(Number(q.difficulty)) && q.difficulty >= 1 && q.difficulty <= 5 ? { _d: Number(q.difficulty) } : {}),
       createdAt: nowIso(),
     };
   }
@@ -113,6 +130,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
         if (!keep.answer) keep.answer = other.answer;
         if (!keep.analysis) keep.analysis = other.analysis;
         if (keep.options.length < other.options.length) keep.options = other.options;
+        if (!keep._d && other._d) keep._d = other._d;
         keep.images = [...new Set([...keep.images, ...other.images])];
         out[dup] = keep;
       }
@@ -122,13 +140,14 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     return { questions: out, answers, materials };
   }
 
-  function applyAnswers(paper, answers) {
+  /** book：习题书的答案册覆盖整本书、题号全书唯一时，按「书 + 题号」对答案，不限于某一章。 */
+  function applyAnswers(paper, answers, book = null) {
     if (!answers.length) return 0;
     const items = all();
     let n = 0;
     for (const a of answers) {
-      const q = items.find((x) => x.paper === paper && normNo(x.number) === normNo(a.number));
-      if (q) { if (a.answer) { q.answer = String(a.answer); q.answerSource = "官方"; } if (a.analysis) { q.analysis = String(a.analysis); q.analysisSource = "官方"; } n++; }
+      const q = items.find((x) => (book ? x.source === "习题" && x.book === book : x.paper === paper) && normNo(x.number) === normNo(a.number));
+      if (q) { if (a.answer) { q.answer = scrub(a.answer); q.answerSource = "官方"; } if (a.analysis) { q.analysis = scrub(a.analysis); q.analysisSource = "官方"; } n++; }
     }
     store.saveList("bank", items);
     return n;
@@ -138,13 +157,16 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     if (meta.kind === "answers") {
       // 解析文件里重述的题目只取答案和解析，不新增题目
       const answers = [...merged.answers, ...merged.questions.filter((q) => q.answer || q.analysis).map((q) => ({ number: q.number, answer: q.answer, analysis: q.analysis }))];
-      return { added: 0, updated: 0, answered: applyAnswers(meta.paper, answers), total: 0 };
+      return { added: 0, updated: 0, answered: applyAnswers(meta.paper, answers, meta.answerScope === "book" ? meta.book : null), total: 0 };
     }
     const items = all();
     // 同一试卷同题号已存在则更新，避免重复导入
     let added = 0;
     let updated = 0;
+    const rated = {};
     for (const q of merged.questions) {
+      const d = q._d;
+      delete q._d;
       const old = meta.paper && q.number ? items.find((x) => x.paper === meta.paper && x.number === q.number && x.type === q.type) : null;
       if (old) {
         // 重导题目文件时不能把已合并的答案 / 解析 / 裁好的插图冲掉（答案常常来自单独的解析文件）
@@ -155,10 +177,15 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
         if (!q.topics.length && old.topics?.length) keep.topics = old.topics;
         Object.assign(old, { ...q, ...keep, id: old.id, createdAt: old.createdAt });
         updated++;
+        if (d) rated[old.id] = d;
       }
-      else { items.push(q); added++; }
+      else { items.push(q); added++; if (d) rated[q.id] = d; }
     }
     store.saveList("bank", items);
+    if (Object.keys(rated).length) {
+      const cur = store.value("difficulty", { map: {}, at: null });
+      store.saveValue("difficulty", { ...cur, map: { ...(cur.map || {}), ...rated } });
+    }
     const answered = applyAnswers(meta.paper, merged.answers);
     return { added, updated, answered, total: merged.questions.length };
   }
@@ -180,9 +207,12 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     return out;
   }
 
-  const metaLine = (m) => `试卷：${m.paper || "未知"}；科目：${m.subject}${m.kind === "answers" ? "；这是答案解析册" : ""}`;
+  const metaLine = (m) => m.source === "习题"
+    ? `习题书：${m.book || "未知"}；这一份是：${m.paper || "未知"}；科目：${m.subject}${m.kind === "answers" ? "；这是答案解析册" : ""}。注意：这是习题书的一章，不是真题卷——没有「大题」标题，type 按题目形式判断（有 (A)(B)(C)(D) 选项＝单选，题里有横线空＝填空，其余＝解答）；题号按书上原样写（本章从 1 开始）。`
+    : `试卷：${m.paper || "未知"}；科目：${m.subject}${m.kind === "answers" ? "；这是答案解析册" : ""}`;
   /** 答案册要对上已导入的题：把本卷题号和题目开头给模型，按内容对应题号。 */
   function numberHint(m) {
+    if (m.kind === "answers" && m.answerScope === "book") return `\n\n【说明】这份答案对应整本《${m.book}》，题号全书唯一，number 照答案上的原题号写，不要改号；页上所有题的答案都输出。`;
     if (m.kind !== "answers" || !m.paper) return "";
     const qs = all().filter((q) => q.paper === m.paper).sort((a, b) => numKey(a.number) - numKey(b.number));
     if (!qs.length) return "";
@@ -279,7 +309,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
   }
 
   /** 按 manifest.json 批量导入整理好的真题文件夹；每个文件完成后记进度，中断后再点会从没做完的继续。 */
-  async function importManifest({ folder, progress, signal, readProgress, saveProgress }) {
+  async function importManifest({ folder, progress, signal, readProgress, saveProgress, onFileDone = () => {} }) {
     const path = require("node:path");
     const manifestFile = path.join(folder, "manifest.json");
     if (!fs.existsSync(manifestFile)) fail(`找不到 ${manifestFile}`);
@@ -304,16 +334,27 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     const runOne = async (it) => {
       const label = `${it.paper}${it.kind === "answers" ? " 解析" : ""}`;
       try {
-        if (it.kind === "answers" && inflight.has(it.paper)) await inflight.get(it.paper).catch(() => {});
-        if (it.kind === "answers" && !all().some((q) => q.paper === it.paper)) fail("这套试卷的题目还没导入，等题目导完再合并答案");
+        const bookScope = it.kind === "answers" && it.category === "习题" && it.scope === "book";
+        if (bookScope) {
+          // 整本书的答案：等这本书所有正在导的题目文件做完
+          await Promise.all([...inflight].filter(([k]) => k.startsWith(`${it.book}\u0000`)).map(([, p]) => p.catch(() => {})));
+          if (!all().some((q) => q.source === "习题" && q.book === it.book)) fail("这本书的题目还没导入，等题目导完再合并答案");
+        } else {
+          if (it.kind === "answers" && inflight.has(it.paper)) await inflight.get(it.paper).catch(() => {});
+          if (it.kind === "answers" && !all().some((q) => q.paper === it.paper)) fail("这套试卷的题目还没导入，等题目导完再合并答案");
+        }
         const buf = fs.readFileSync(path.join(folder, it.file));
         const { dir, pages } = await pdf.render(buf, {});
         let partial = null;
         try {
           const imgs = pages.map((p) => ({ data: fs.readFileSync(p.file).toString("base64"), mimeType: "image/jpeg" }));
-          const meta = { subject: it.subject, paper: it.paper, year: it.year, kind: it.kind, source: "真题" };
+          // category: "习题" 的是习题书（按章节一个文件），其余都是真题
+          const meta = it.category === "习题"
+            ? { subject: it.subject, paper: it.paper, year: null, kind: it.kind, source: "习题", book: it.book || "", answerScope: it.scope === "book" ? "book" : "paper" }
+            : { subject: it.subject, paper: it.paper, year: it.year, kind: it.kind, source: "真题" };
           const r = await importImages({ meta, imgs, signal, progress: (d, t, m) => progress(finishedCount, items.length, `${label}：${m}`) });
           summary.files++; summary.added += r.added; summary.updated += r.updated; summary.answered += r.answered;
+          if (it.kind !== "answers") { try { onFileDone({ paper: it.paper, ids: all().filter((q) => q.paper === it.paper).map((q) => q.id) }); } catch { /* 后台归类失败不影响导入 */ } }
           const hard = (r.pageErrors || []).filter((e) => !e.includes("截断"));
           if (hard.length) partial = `部分页失败（已保存其余页）：${hard.join("；")}`;
         } finally {
@@ -346,15 +387,18 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
         if (signal?.aborted) fail("已取消（已完成的文件不会重做，再点一次会继续）");
         const it = todo[next++];
         const p = runOne(it);
-        if (it.kind !== "answers") inflight.set(it.paper, p);
+        const key = it.category === "习题" && it.book ? `${it.book}\u0000${it.paper}` : it.paper;
+        if (it.kind !== "answers") { inflight.set(it.paper, p); if (key !== it.paper) inflight.set(key, p); }
         await p;
         if (inflight.get(it.paper) === p) inflight.delete(it.paper);
+        if (inflight.get(key) === p) inflight.delete(key);
       }
     };
     await Promise.all([worker(), worker()]);
     if (stopError) throw stopError;
     progress(items.length, items.length, "完成");
-    return { ...summary, total: items.length, done: state.done.length };
+    // 进度记录是几个文件夹共用的，只数这份清单里的文件
+    return { ...summary, total: items.length, done: items.filter((it) => state.done.includes(it.file)).length };
   }
 
   async function importPdf({ meta, pdfBase64, first, last, progress, signal }) {
@@ -406,12 +450,25 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     const map = new Map();
     for (const q of all()) {
       if (!q.paper) continue;
-      const p = map.get(q.paper) || { paper: q.paper, subject: q.subject, year: q.year, count: 0, answered: 0 };
+      const p = map.get(q.paper) || { paper: q.paper, subject: q.subject, year: q.year, source: q.source === "习题" ? "习题" : "真题", book: q.book || "", minNo: 99999, count: 0, answered: 0 };
       p.count++;
       if (q.answer) p.answered++;
+      p.minNo = Math.min(p.minNo, numKey(q.number));
       map.set(q.paper, p);
     }
-    return [...map.values()].sort((a, b) => (b.year || 0) - (a.year || 0));
+    // 真题按年份从新到旧；习题书按书里的顺序（篇 → 科目 → 填空 / 选择 → 第几章 → 最小题号）
+    const ORDER = ["零基础", "基础篇", "强化篇", "提高篇", "综合篇", "高数", "线代", "概率", "填空", "选择"];
+    const rank = (paper) => ORDER.map((w) => (paper.includes(w) ? ORDER.indexOf(w) : 99)).sort((x, y) => x - y).slice(0, 3);
+    const chap = (paper) => { const m = String(paper).match(/第(\d+)章|测试卷([一二三四五六七八九十])/); return m ? (m[1] ? Number(m[1]) : "一二三四五六七八九十".indexOf(m[2]) + 1) : 0; };
+    const key = (p) => [...rank(p.paper), chap(p.paper), p.minNo];
+    return [...map.values()].sort((a, b) => {
+      if (a.source !== b.source) return a.source === "真题" ? -1 : 1;
+      if (a.source === "真题") return (b.year || 0) - (a.year || 0);
+      if (a.book !== b.book) return a.book < b.book ? -1 : 1;
+      const ka = key(a), kb = key(b);
+      for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+      return 0;
+    });
   }
 
   function numKey(n) { const m = String(n).match(/\d+/); return m ? Number(m[0]) : 9999; }

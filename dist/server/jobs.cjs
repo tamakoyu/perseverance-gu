@@ -5,7 +5,7 @@ const { uid, nowIso } = require("./util.cjs");
 function createJobs(ctx) {
   const jobs = new Map();
   const emit = (job) => { try { ctx.events.emit("job", publicJob(job)); } catch { /* 前端不在也没关系 */ } };
-  const publicJob = (j) => ({ id: j.id, kind: j.kind, label: j.label, status: j.status, done: j.done, total: j.total, message: j.message, result: j.result, error: j.error, startedAt: j.startedAt });
+  const publicJob = (j) => ({ id: j.id, kind: j.kind, label: j.label, status: j.status, cancelling: j.status === "running" && j.abort.signal.aborted, done: j.done, total: j.total, message: j.message, result: j.result, error: j.error, startedAt: j.startedAt });
 
   function start(kind, label, fn) {
     const job = { id: uid(), kind, label, status: "running", done: 0, total: 0, message: "开始…", startedAt: nowIso(), abort: new AbortController() };
@@ -31,7 +31,7 @@ function createJobs(ctx) {
     start,
     get: (id) => { const j = jobs.get(id); return j ? publicJob(j) : null; },
     list: () => [...jobs.values()].map(publicJob).reverse().slice(0, 20),
-    cancel: (id) => { const j = jobs.get(id); if (j) j.abort.abort(); return { ok: !!j }; },
+    cancel: (id) => { const j = jobs.get(id); if (j) { j.abort.abort(); j.message = "正在暂停（等手上的页识别完）…"; emit(j); } return { ok: !!j }; },
   };
 }
 

@@ -137,6 +137,8 @@ function createPack({ store, imageDir, version }) {
   function exportPack({ dir, subjects } = {}) {
     let qs = store.list("bank");
     if (subjects?.length) qs = qs.filter((q) => subjects.includes(q.subject));
+    // 习题书是个人购买的书，不放进分享用的题库包
+    qs = qs.filter((q) => q.source !== "习题");
     if (!qs.length) fail("题库是空的，没有可导出的题目");
     const papers = new Set(qs.map((q) => q.paper));
     const engUnits = store.list("engUnits").filter((u) => papers.has(u.paper));

@@ -6,7 +6,7 @@ const SOURCE_BY_MODE = { quick: "快练", section: "专项", full: "模考", eng
 
 function createProgress({ store, bank }) {
   /** 会话里用真题出的题，学习者作答后由智能体调用记录。 */
-  function record({ id, correct, score, learnerAnswer, agent, chatId }) {
+  function record({ id, correct, score, learnerAnswer, agent, chatId, difficulty }) {
     const q = bank.all().find((x) => x.id === id);
     if (!q) return null;
     const max = Number(q.score) || null;
@@ -19,6 +19,7 @@ function createProgress({ store, bank }) {
       source: agent === "practice" ? "练习会话" : "教学会话",
       chatId: chatId || null,
       answer: str(learnerAnswer, 2000),
+      difficulty: Number.isInteger(difficulty) && difficulty >= 1 && difficulty <= 5 ? difficulty : null,
     };
     const list = store.list("bankLog");
     list.push(entry);
@@ -38,14 +39,14 @@ function createProgress({ store, bank }) {
         add(qid, { at: a.finishedAt, correct: r.correct ?? null, score: r.score ?? null, max: r.max ?? null, source: SOURCE_BY_MODE[a.mode] || "练习" });
       }
     }
-    for (const e of store.list("bankLog")) add(e.qid, { at: e.at, correct: e.correct, score: e.score, max: e.max, source: e.source, chatId: e.chatId });
+    for (const e of store.list("bankLog")) add(e.qid, { at: e.at, correct: e.correct, score: e.score, max: e.max, source: e.source, chatId: e.chatId, difficulty: e.difficulty || null });
     const open = new Set();
     for (const m of store.list("mistakes")) {
       if (!m.bankId) continue;
       for (const h of m.history || []) if (h.correct === true || h.correct === false) add(m.bankId, { at: h.at, correct: h.correct, score: null, max: null, source: "错题重做" });
       if (!m.archived) open.add(m.bankId);
       // 会话里记了错题但没单独记录作答的，也算做过一次（做错）
-      if (!map.has(m.bankId)) add(m.bankId, { at: m.createdAt, correct: false, score: null, max: null, source: m.source || "错题本" });
+      if (!map.has(m.bankId)) add(m.bankId, { at: m.createdAt, correct: false, score: null, max: null, source: m.source || "错题本", chatId: m.chatId || null });
     }
     for (const list of map.values()) list.sort((x, y) => (x.at < y.at ? -1 : 1));
     return { map, open };
@@ -55,7 +56,7 @@ function createProgress({ store, bank }) {
     const { map, open } = events();
     const papers = new Map();
     for (const q of bank.all()) {
-      if (q.subject !== subject || q.source === "AI生成" || !q.paper) continue;
+      if (q.subject !== subject || q.source === "AI生成" || q.source === "习题" || !q.paper) continue;
       if (!papers.has(q.paper)) papers.set(q.paper, { paper: q.paper, year: q.year, questions: [] });
       const ev = map.get(q.id) || [];
       const last = ev[ev.length - 1] || null;
