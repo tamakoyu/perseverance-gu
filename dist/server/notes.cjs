@@ -108,7 +108,7 @@ ${existing.map((t) => t.replace(/\.md$/, "")).join("\n") || "（还没有）"}
 规则：
 - 知识点优先补进对应的章节笔记（已有就 update，没有就按教材章节编号 create，如 数学/高数/02-导数与微分）。
 - 只有方法跨章节、或步骤和例题多到值得单独复习时，才 create/update 题型笔记（<科目>/<课程>/题型/题型名）。
-- 出现需要背的新公式/结论时 update 或 create 该章的公式速查（<科目>/<课程>/公式速查/NN-章名，文件名与章节笔记相同）。
+- 会话里讲过、用到或学习者写错过的公式 / 定义 / 结论（等价关系、展开式、定理条件等），update 或 create 该章的公式速查（<科目>/<课程>/公式速查/NN-章名，文件名与章节笔记相同）；章节笔记写方法和例题，公式表放速查。
 - 该课程有总览（00-…总览）时，新建章节笔记、或这次暴露了新的薄弱点，把总览也列为 update（更新章节表的状态和薄弱的点）。
 - 会话是复习已有章节时，目标就是那篇章节笔记（update），不要另建新笔记。
 - 最多 4 篇；路径以 数学/、408/、英语/、政治/ 开头，不含 .md。
@@ -123,6 +123,16 @@ ${transcript.length > 24000 ? `${transcript.slice(0, 12000)}\n…\n${transcript.
       path: cleanPath(t.path), kind: String(t.kind || ""), reason: String(t.reason || ""),
     })).filter((t) => SUBJECT_LIST.includes(t.path.split("/")[0]) && t.path.split("/").length >= 2).slice(0, 4);
     if (!targets.length) fail("模型没有规划出要写的笔记，请重试");
+    // 会话里讲了公式时，确保对应章节的公式速查也在目标里（模型常把公式只写进章节笔记，速查就一直缺）
+    if ((transcript.match(/\$[^$\n]{3,}\$/g) || []).length >= 6) {
+      for (const t of [...targets]) {
+        const m = t.path.match(/^(.+)\/(\d{2}-[^/]+)$/);
+        if (!m || /\/(公式速查|题型)$/.test(m[1])) continue;
+        const sheet = `${m[1]}/公式速查/${m[2]}`;
+        if (targets.some((x) => x.path === sheet)) continue;
+        targets.push({ path: sheet, kind: "速查", reason: "把本次会话讲到、用到和学习者写错过的公式与结论补进速查表（已有的不重复，写错过的标 ★）" });
+      }
+    }
     for (const t of targets) {
       t.original = vault.readFull(t.path);
       t.action = t.original == null ? "create" : "update";
@@ -150,6 +160,7 @@ ${SESSION_RULES}
 3. 按上面的规则更新 ==高亮== 和 ★。
 4. 例题只在比原来的更有代表性时替换，不增加数量；不要删掉原来的易错点。
 5. 修改课程总览时，只更新对应章的状态和「薄弱的点」。
+6. 公式速查：把会话里讲过、用到、学习者写错过或问过的公式、定义和结论补进对应小节的表格（公式/结论 | 条件 | 备注），没有对应小节就按章节笔记的小节新增；学习者写错过的加 ★，会话里暴露不会的用 ==高亮==；已有的不重复。
 
 输出格式（不要 JSON、不要代码块包裹），每篇一段：
 === FILE: 路径（与下面给定的完全一致，不含 .md） ===
