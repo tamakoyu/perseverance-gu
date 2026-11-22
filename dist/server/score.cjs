@@ -15,6 +15,9 @@
 //   难度越高的题做对，S 起点越长；隔开复习成功一次 S 变成约 1.6–2.6 倍。
 const { uid, nowIso, today, str, fail } = require("./util.cjs");
 const { buildFrame } = require("./scoreframe.cjs");
+const { points, byId, byLeaf: pointsByLeaf, exactPoints, validPointIds } = require("./knowledge.cjs");
+const { weights } = require("./question-knowledge.cjs");
+const { itemsOfPoint } = require("./outline.cjs");
 const vocablist = require("./vocablist.cjs");
 const { retention } = require("./momo.cjs");
 
@@ -40,7 +43,7 @@ const keep = (R) => FLOOR + (1 - FLOOR) * R;
 const r1 = (x) => Math.round(x * 10) / 10;
 const r2 = (x) => Math.round(x * 100) / 100;
 
-function createScore({ ctx, store, bank, llm, progress, momo, getSettings, transcriptText, classify, onChange = () => {} }) {
+function createScore({ ctx, store, bank, llm, progress, coverage, momo, getSettings, transcriptText, classify, onChange = () => {} }) {
   // ── 框架（考点分值）缓存：题库或 AI 归类变了才重建 ──
   let frameCache = null;
   function frame() {
@@ -48,7 +51,7 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
     const ai = store.value("scoreMap", { map: {}, at: null });
     const sig = `${items.length}|${ai.at}`;
     if (frameCache?.sig === sig) return frameCache;
-    const built = buildFrame(items, ai.map || {});
+    const built = buildFrame(items, ai.map || {}, ai.points || {});
     const leaves = new Map();
     for (const s of built.frame) for (const m of s.modules) for (const c of m.chapters) for (const l of c.leaves) leaves.set(l.id, { ...l, subject: s.key, module: m.name, chapter: c.name, ref: l });
     const qMap = new Map();
@@ -101,6 +104,7 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
     const dm = diffMap();
     const obs = []; // {leaf, at(ms), kind, q, w, d, label, src, qid}
     const push = (leaf, o) => { if (f.leaves.has(leaf)) obs.push({ leaf, ...o }); };
+    const inLeaf = (ids, leaf) => (ids || []).filter((id) => byId.get(id)?.leaf === leaf);
     const quality = (e) => (e.score != null && e.max ? Math.max(0, Math.min(1, e.score / e.max)) : e.correct === true ? 1 : e.correct === false ? 0 : null);
     // 1) 题库题：快练、模考、英语专项、会话里记录的原题、带题库 id 的错题与重做
     const { map } = progress.events();
@@ -113,13 +117,17 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
       const pooled = hits[0].level && hits[0].level !== "leaf" ? `没对上具体考点，按${{ chapter: "章", module: "模块", subject: "科目" }[hits[0].level]}「${hits[0].pool}」整体计` : "";
       const kind = q.source === "AI生成" || q.source === "习题" ? "practice" : "real";
       const base = qDiff(q, dm);
+      const testedAll = f.knowledge.get(qid)?.tested || [];
       for (const e of evs) {
         const qv = quality(e);
         if (qv == null) continue;
         const at = Date.parse(e.at);
         if (!at) continue;
         const d = d15(e.difficulty, base);
-        for (const h of hits) push(h.id, { at, kind, q: qv, w: h.w, d, qid, label: `${q.paper || "题库"}${q.number ? ` 第${q.number}题` : ""}`, src: e.source || "练习", note: pooled });
+        const ids = validPointIds(e.pointIds, q.subject);
+        const assessed = weights(ids);
+        const used = ids.length ? ids : testedAll;
+        for (const h of assessed.length ? assessed : hits) push(h.id, { at, kind, q: e.hinted && qv === 1 ? 0.6 : qv, w: h.w, d, qid, pts: inLeaf(used, h.id), label: `${q.paper || "题库"}${q.number ? ` 第${q.number}题` : ""}`, src: e.source || "练习", note: pooled });
       }
     }
     // 旧版结算（v<2）的练习评估里已经包含了那次会话的错题，避免重复计入
@@ -130,28 +138,32 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
     // 2) 不带题库 id 的错题（会话里出的题、讲题批改、手动录入）：记错题算一次做错，重做按结果
     for (const m of store.list("mistakes")) {
       if (m.bankId) continue;
-      const hits = textHits(m.subject, m.topic, m.question);
+      const mIds = validPointIds(m.pointIds, m.subject);
+      const assessed = weights(mIds);
+      const hits = assessed.length ? assessed : textHits(m.subject, m.topic, m.question);
       if (!hits.length) continue;
       const label = `错题 · ${m.topic}`;
       const d = d15(m.difficulty);
       const qid = `m:${m.id}`;
       if (!(m.chatId && oldSettled.has(m.chatId))) {
         const at = Date.parse(m.createdAt);
-        if (at) for (const h of hits) push(h.id, { at, kind: "practice", q: 0, w: h.w, d, qid, label, src: m.source || "错题本", soft: SLIPS.has(m.errorType), note: poolNote(hits) });
+        if (at) for (const h of hits) push(h.id, { at, kind: "practice", q: 0, w: h.w, d, qid, pts: inLeaf(mIds, h.id), label, src: m.source || "错题本", soft: SLIPS.has(m.errorType), note: poolNote(hits) });
       }
       for (const h of m.history || []) {
         const at = Date.parse(h.at);
         const qv = h.correct === true ? 1 : h.correct === false ? 0 : h.rating ? (h.rating >= 3 ? 1 : h.rating === 2 ? 0.5 : 0) : null;
         if (!at || qv == null) continue;
-        for (const x of hits) push(x.id, { at, kind: "practice", q: qv, w: x.w, d, qid, label: `${label}（重做）`, src: "错题重做", note: poolNote(hits) });
+        for (const x of hits) push(x.id, { at, kind: "practice", q: qv, w: x.w, d, qid, pts: inLeaf(mIds, x.id), label: `${label}（重做）`, src: "错题重做", note: poolNote(hits) });
       }
     }
     // 3) 会话里逐题记录的题（kaoyan_record_question：答对 / 提示后对 / 部分对）
     for (const r of store.list("qlog")) {
       const at = Date.parse(r.at);
-      const hits = textHits(r.subject, r.topic, r.question);
+      const rIds = validPointIds(r.pointIds, r.subject);
+      const assessed = weights(rIds);
+      const hits = assessed.length ? assessed : textHits(r.subject, r.topic, r.question);
       if (!at || !hits.length) continue;
-      for (const h of hits) push(h.id, { at, kind: "practice", q: r.q, w: h.w, d: d15(r.difficulty), label: r.topic, src: r.src || "会话", note: poolNote(hits, r.note || "") });
+      for (const h of hits) push(h.id, { at, kind: "practice", q: r.q, w: h.w, d: d15(r.difficulty), pts: inLeaf(rIds, h.id), label: r.topic, src: r.src || "会话", note: poolNote(hits, r.note || "") });
     }
     // 4) 讲题批改里做对的题（做错的已经进了错题本）
     for (const rev of store.list("reviews")) {
@@ -184,8 +196,11 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
   }
 
   /** 回放一个考点的证据，得到 at 时刻的状态。 */
-  function replay(list, at, points) {
-    const st = { m: 0, S: 0, last: null, n: 0, real: 0, top: 0, evidence: [] };
+  // 广度：考点下有 size 个知识点。某道题只练到已经做对过的知识点、而这个考点还有没做对过的知识点时，加分减半，
+  // 避免反复刷同一个小点就把整颗星点满。没有知识点信息的旧记录不受影响。
+  const REPEAT_POINT = 0.5;
+  function replay(list, at, points, size = 0) {
+    const st = { m: 0, S: 0, last: null, n: 0, real: 0, top: 0, evidence: [], covered: new Set() };
     const rate = rateOf(points);
     const seen = new Map();
     for (const o of list) {
@@ -201,10 +216,13 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
         seen.set(o.qid, o.at);
       }
       const lower = T.d > 1 ? TIERS[T.d - 1].cap : 0;
-      const up = Math.min(1, rate * w) * o.q * Math.max(0, T.cap - cur);
+      let breadth = 1;
+      if (o.pts?.length && size && st.covered.size < size && o.pts.every((id) => st.covered.has(id))) breadth = REPEAT_POINT;
+      const up = Math.min(1, rate * w) * o.q * Math.max(0, T.cap - cur) * breadth;
       const down = Math.min(1, RATE_DOWN * w) * (1 - o.q) * Math.max(0, cur - lower) * (o.soft ? 0.5 : 1);
       const m = clamp01(cur + up - down);
       if (o.q >= 0.6) {
+        for (const id of o.pts || []) st.covered.add(id);
         if (!st.S) st.S = T.S0;
         else {
           const gain = elapsed >= 1 ? 1 + 2 * (1 - R) + 0.6 : 1.03;
@@ -212,7 +230,7 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
         }
         if (o.q >= 0.8 && o.kind !== "taught" && T.d > st.top) st.top = T.d;
       } else st.S = Math.max(3, (st.S || T.S0) * 0.5);
-      st.evidence.push({ at: new Date(o.at).toISOString(), kind: o.kind, d: T.d, tier: T.name, q: r2(o.q), label: o.label, src: o.src, note: o.note || "", delta: r2((m - cur) * points), decay: r2((st.m - cur) * points) });
+      st.evidence.push({ at: new Date(o.at).toISOString(), kind: o.kind, d: T.d, tier: T.name, q: r2(o.q), label: o.label, src: o.src, note: [o.note, breadth < 1 ? `这个知识点已做对过，本考点还有 ${size - st.covered.size} 个知识点没做对，加分减半` : ""].filter(Boolean).join("；"), delta: r2((m - cur) * points), decay: r2((st.m - cur) * points) });
       st.m = m;
       st.last = o.at;
       st.n++;
@@ -263,6 +281,8 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
     return { ...base, target: vocablist.WORDS.length, learned, basic: Object.values(bands).reduce((a, b) => a + b.basic, 0), effective: Math.round(effective), mastery: Math.min(1, mastery), bands, freqFromBank: vl.fromBank, freqPapers: vl.papers };
   }
 
+  const leafSize = (id) => (pointsByLeaf.get(id) || []).filter((p) => !p.name.includes("待核")).length;
+
   /** 某一时刻的全部分数（history=true 时只要总分）。 */
   function evaluate(at = Date.now(), { obs = collect(), vocab, detail = true } = {}) {
     const f = frame();
@@ -292,7 +312,7 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
               view = { id: l.id, name: l.name, band: l.band, points: r2(pts), score: r2(sc), m: r2(m), now: r2(m), R: r2(m), vocab: { ...v, bands: undefined }, size: band?.size || 0, learnedN: band?.learned || 0, desc: band?.desc || "", basicN: band?.basic || 0, words: band?.weakest || [], todo: band?.todo || [], due: false, n: band?.learned || 0 };
               varSum += (pts * 0.05) ** 2;
             } else {
-              const st = replay(byLeaf.get(l.id) || [], at, l.points);
+              const st = replay(byLeaf.get(l.id) || [], at, l.points, leafSize(l.id));
               const R = st.last ? Rf((at - st.last) / DAY, st.S) : 0;
               const mNow = st.m * (st.last ? keep(R) : 0);
               const sc = l.points * mNow;
@@ -431,7 +451,7 @@ function createScore({ ctx, store, bank, llm, progress, momo, getSettings, trans
       history,
       review: review.slice(0, 20),
       reviewCount: review.length,
-      frameInfo: { mapped: f.stats.mapped, total: f.stats.total, aiCount: f.aiCount, aiAt: f.aiAt, vocabPts, diffCount: Object.keys(diffMap()).length, bankTotal: f.qMap.size },
+      frameInfo: { mapped: f.stats.mapped, total: f.stats.total, fineReal: [...f.qMap.values()].filter((q) => ["数学", "408"].includes(q.subject) && isReal(q) && f.knowledge.get(q.id)?.tested.length).length, aiCount: f.aiCount, aiAt: f.aiAt, vocabPts, diffCount: Object.keys(diffMap()).length, bankTotal: f.qMap.size },
       tiers: TIERS.slice(1).map((T) => ({ d: T.d, name: T.name, cap: T.cap, desc: T.desc })),
       settlements: settlements().slice(-30).reverse().map((x) => ({ chatId: x.chatId, at: x.at, title: x.title, by: x.by, items: (x.items || []).length })),
     };
@@ -548,62 +568,134 @@ ${cat.text}
       .map((x) => ({ id: x.id, title: x.title || "未命名会话", kind: x.kind, updatedAt: x.updatedAt, settled: done.has(x.id) }));
   }
 
-  // ── AI 精确归类真题考点（一次性，可续跑） ──
-  /** 把一批题归到考纲考点（每 25 道一次调用），归完一批存一批；中途停下不丢。 */
+  // ── AI 细归类：把数学一 / 408 的题目归到考纲知识点（knowledge.cjs） ──
+  // 规则写在 CLASSIFY_RULES（给模型）和前端「归类规则」里（给人看），两处一起改。
+  const CLASSIFY_BATCH = 20;
+  const CLASSIFY_PARALLEL = 3;
+  const CLASSIFY_RULES = `你在给考研题目标注考纲知识点。下面每道题给出出处、原标签、题干、选项和解析，最后附知识点编号表。
+规则：
+1. tested（直接考查）：题目的考查目标，不会这个知识点就做不出来或必然做错。methods（解题方法）：解题时用到、但不是这道题考查目标的知识点。
+2. 按小问分别判断再合并；每题 tested 一般 1–3 个，最多 6 个；methods 最多 6 个；同一个知识点不要同时出现在两边。
+3. 选最细、最贴切的条目：知识点已按考试大纲拆细（如「检错编码」与「纠错编码」、「滑动窗口机制」与「停止-等待协议」、「文件的打开」与「文件的读」分开），只选题目真正涉及的那一项，不要把同一考点下的细项全选上。
+4. 「下列说法正确的是」这类逐项判断的选择题，每个选项考到的知识点都算 tested。
+5. 以题干、选项和解析为准，原标签只作参考；习题的出处（书名·章名）可以帮助判断范围，但不能代替看题。
+6. 名称带「待核」的条目只在题目明确考查时才选。408 区分组成原理（硬件实现）和操作系统（管理策略），只有题目确实跨科时才跨科选。
+7. 实在找不到对应知识点（超纲、纯计算练习、题目残缺）时 tested 给空数组。
+输出 JSON：{"items":[{"i":题号序号,"tested":["P1"],"methods":["P2"]}]}，每道题都要有一项。`;
+  const classifyModel = () => { const m = getSettings().classifyModel; return m?.provider && m?.id ? { provider: m.provider, id: m.id } : null; };
+  const catalogCache = new Map();
+  function catalogOf(subject) {
+    if (catalogCache.has(subject)) return catalogCache.get(subject);
+    const list = points.filter((point) => point.subject === subject);
+    const codes = new Map(list.map((point, index) => [`P${index + 1}`, point.id]));
+    const text = [...codes].map(([code, id]) => `${code} ${byId.get(id).leaf.split("/").slice(2).join("·")} / ${byId.get(id).name}`).join("\n");
+    const out = { codes, text };
+    catalogCache.set(subject, out);
+    return out;
+  }
+  /** 每 20 题一次调用、同时 3 批；每批归完立即保存。某一批失败（多半是开着思考的模型输出被截断）就对半拆开重归，
+   *  拆到 2 题还失败才记为失败（留着下次再归）。 */
   async function classifyList(todo, { report, signal } = {}) {
-    const total = todo.length;
-    let done = 0;
+    const batches = [];
     for (const subject of ["数学", "408"]) {
       const list = todo.filter((q) => q.subject === subject);
-      const cat = leafCatalog([subject]);
-      for (let i = 0; i < list.length; i += 25) {
-        if (signal?.aborted) fail("已取消");
-        const batch = list.slice(i, i + 25);
-        report?.(done, total, `${subject}：归类 ${done + 1}–${done + batch.length} / ${total}`);
-        const res = await llm.json({
-          system: `把考研真题归到考试大纲的考点上。考点列表（编号 科目/模块/章节/考点）：\n${cat.text}\n\n每道题给 1–3 个考点编号，按这道题主要考查的内容排序（第一个是主考点）；综合题列出各小问的主要考点。输出 JSON：{"items":[{"i":题目序号,"codes":["K3","K17"]}]}`,
-          text: batch.map((q, j) => `#${j} ${q.paper} 第${q.number}题（${q.type}，${q.score || "?"}分）考点标签：${(q.topics || []).join("、") || "无"}\n${String(q.stem || "").replace(/\s+/g, " ").slice(0, 400)}`).join("\n\n"),
-          maxTokens: 12000, // 「便宜」槽开着思考时，思考也算在上限里，给足才写得完 JSON
-          slot: "cheap",
-          signal,
-        });
-        // 重新读一次再写：后台归类和按钮归类可能同时在跑
-        const cur = store.value("scoreMap", { map: {}, at: null });
-        const map = { ...(cur.map || {}) };
-        for (const it of res.items || []) {
-          const q = batch[Number(it.i)];
-          if (!q) continue;
-          const ids = (it.codes || []).map((c) => cat.codes.get(String(c).trim().toUpperCase())).filter(Boolean).slice(0, 3);
-          if (ids.length) map[q.id] = [...new Set(ids)];
-        }
-        store.saveValue("scoreMap", { ...cur, map, partial: true });
-        done += batch.length;
-      }
+      for (let i = 0; i < list.length; i += CLASSIFY_BATCH) batches.push({ subject, qs: list.slice(i, i + CLASSIFY_BATCH) });
     }
+    const model = classifyModel();
+    const stat = { done: 0, ok: 0, empty: 0, failed: 0, error: "" };
+    let next = 0;
+    let fatal = null; // 模型不可用、没配置等：拆批也没用，整个任务停下
+    const splittable = (err) => err?.truncated || /JSON|解析|截断/.test(String(err?.message || err));
+    const worker = async () => {
+      while (next < batches.length && !signal?.aborted && !fatal) {
+        const { subject, qs } = batches[next++];
+        const { codes, text } = catalogOf(subject);
+        try {
+          const res = await llm.json({
+            system: `${CLASSIFY_RULES}\n\n知识点编号表（编号 章·考点 / 知识点）：\n${text}`,
+            text: qs.map((q, j) => `#${j} ${q.source === "习题" ? `习题·${q.book || ""}·` : ""}${q.paper || ""} 第${q.number}题（${q.type}） 原标签：${(q.topics || []).join("、") || "无"}\n${String(q.stem || "").slice(0, 2200)}${q.options?.length ? `\n选项：${q.options.map((o) => `${o.key}. ${o.text}`).join("；").slice(0, 800)}` : ""}${q.analysis ? `\n解析：${String(q.analysis).slice(0, 1200)}` : ""}`).join("\n\n"),
+            maxTokens: 32000, // 开着思考的模型，思考也算在上限里（deepseek flash 20 题常用到 12k 以上）
+            slot: "cheap",
+            model,
+            signal,
+            splitOnTruncate: true,
+          });
+          const decode = (ids) => validPointIds(Array.isArray(ids) ? ids.map((code) => codes.get(String(code).trim().toUpperCase())) : [], subject).slice(0, 6);
+          // 重读再写：后台归类和手动归类可能同时在写
+          const cur = store.value("scoreMap", { map: {}, at: null });
+          const pointMap = { ...(cur.points || {}) };
+          const at = nowIso();
+          for (const item of Array.isArray(res?.items) ? res.items : []) {
+            const q = qs[Number(item.i)];
+            if (!q) continue;
+            const tested = decode(item.tested);
+            if (tested.length) { pointMap[q.id] = { tested, methods: decode(item.methods).filter((id) => !tested.includes(id)), at }; stat.ok++; }
+            else { pointMap[q.id] = { tested: [], methods: [], empty: true, at }; stat.empty++; }
+          }
+          store.saveValue("scoreMap", { ...cur, points: pointMap, at, partial: true });
+          frameCache = null;
+        } catch (err) {
+          if (signal?.aborted) break;
+          if (!splittable(err)) { fatal = err; break; }
+          if (qs.length > 2) {
+            const half = Math.ceil(qs.length / 2);
+            batches.push({ subject, qs: qs.slice(0, half) }, { subject, qs: qs.slice(half) });
+            continue;
+          }
+          stat.failed += qs.length;
+          stat.error = err?.message || String(err);
+        }
+        stat.done += qs.length;
+        report?.(stat.done, todo.length, `已归 ${stat.done} / ${todo.length}${stat.failed ? ` · 失败 ${stat.failed}` : ""}`);
+      }
+    };
+    report?.(0, todo.length, `准备归类 ${todo.length} 道`);
+    await Promise.all(Array.from({ length: Math.min(CLASSIFY_PARALLEL, batches.length) }, worker));
+    if (signal?.aborted) fail("已暂停");
+    if (fatal) fail(`归类停止：${fatal.message || fatal}（已归 ${stat.ok + stat.empty} 道已保存）`);
+    return stat;
   }
-  async function classifyBank({ progress: report, signal, force = false }) {
-    if (force) store.saveValue("scoreMap", { map: {}, at: null });
-    const map = store.value("scoreMap", { map: {}, at: null }).map || {};
-    const todo = bank.all().filter((q) => ["数学", "408"].includes(q.subject) && q.source !== "AI生成" && !map[q.id]);
-    await classifyList(todo, { report, signal });
-    const cur = store.value("scoreMap", { map: {}, at: null });
-    store.saveValue("scoreMap", { ...cur, at: nowIso(), partial: false });
-    frameCache = null;
-    return { mapped: Object.keys(cur.map || {}).length, total: bank.all().filter((q) => ["数学", "408"].includes(q.subject) && q.source !== "AI生成").length };
+
+  /** 每类题还有多少道没归（已人工核对、AI 归过、AI 判断无可归的都算归过）。 */
+  function classifyStatus() {
+    const f = frame();
+    const out = { 真题: { pending: 0, done: 0 }, 习题: { pending: 0, done: 0 } };
+    for (const q of f.qMap.values()) {
+      if (!["数学", "408"].includes(q.subject) || q.source === "AI生成") continue;
+      const k = q.source === "习题" ? "习题" : "真题";
+      if (f.knowledge.get(q.id)?.status === "待核对") out[k].pending++; else out[k].done++;
+    }
+    return out;
+  }
+
+  let manualClassify = false;
+  /** 手动归类：先真题（新年份在前）后习题，只归还没归过的。 */
+  async function classifyBank({ progress: report, signal }) {
+    const known = frame().knowledge;
+    const pending = bank.all().filter((q) => ["数学", "408"].includes(q.subject) && q.source !== "AI生成" && known.get(q.id)?.status === "待核对");
+    const real = pending.filter((q) => q.source !== "习题").sort((a, b) => (b.year || 0) - (a.year || 0));
+    const todo = [...real, ...pending.filter((q) => q.source === "习题")];
+    manualClassify = true;
+    try {
+      const r = await classifyList(todo, { report, signal });
+      frameCache = null;
+      return { ...r, total: todo.length };
+    } finally { manualClassify = false; }
   }
 
   // 新导入的题（习题书等）导完一份就在后台归一次考点，做题加分才会加到对的星上
   const clsQueue = new Set();
   let clsTimer = null, classifying = false;
   function queueClassify(ids) {
-    const map = store.value("scoreMap", { map: {}, at: null }).map || {};
-    for (const id of ids || []) if (id && !map[id]) clsQueue.add(id);
+    const knowledge = frame().knowledge;
+    for (const id of ids || []) if (id && knowledge.get(id)?.status === "待核对") clsQueue.add(id);
     if (!clsQueue.size || clsTimer || classifying) return;
     clsTimer = setTimeout(runClassify, 3000);
   }
   async function runClassify() {
     clsTimer = null;
     if (classifying || !clsQueue.size) return;
+    if (manualClassify) { clsTimer = setTimeout(runClassify, 60000); return; } // 手动归类在跑，等它结束
     classifying = true;
     const byId = new Map(bank.all().map((q) => [q.id, q]));
     const list = [...clsQueue].map((id) => byId.get(id)).filter((q) => q && ["数学", "408"].includes(q.subject));
@@ -624,19 +716,33 @@ ${cat.text}
   async function rateList(todo, { report, signal } = {}) {
     const total = todo.length;
     let done = 0;
-    for (let i = 0; i < todo.length; i += 30) {
+    // 每批 30 题；失败（多半是输出被截断）就对半拆开重评，拆到 2 题还失败就跳过，下次再评
+    const queue = [];
+    for (let i = 0; i < todo.length; i += 30) queue.push(todo.slice(i, i + 30));
+    while (queue.length) {
       if (signal?.aborted) fail("已取消");
-      const batch = todo.slice(i, i + 30);
+      const batch = queue.shift();
       report?.(done, total, `评定难度 ${done + 1}–${done + batch.length} / ${total}`);
-      const res = await llm.json({
+      let res;
+      try {
+        res = await llm.json({
         system: `你是考研命题老师。按考研考生的视角给每道题评难度档（1–5）：
 ${TIER_RUBRIC}
 参考：同一份真题卷里越靠后的解答题通常越难；选择 / 填空多数是 2–3，个别陷阱多或计算量大的到 4；解答题多数 3–4，压轴小问 5；英语阅读按推理深度和干扰项强度判断。输出 JSON：{"items":[{"i":题目序号,"d":难度}]}`,
         text: batch.map((q, j) => `#${j} ${q.subject} ${q.paper || q.source || ""} 第${q.number}题（${q.type}${q.part ? `·${q.part}` : ""}，${q.score || "?"}分）考点：${(q.topics || []).join("、") || "无"}\n${String(q.stem || "").replace(/\s+/g, " ").slice(0, 350)}${q.options?.length ? `\n选项：${q.options.map((o) => `${o.key}. ${String(o.text).slice(0, 60)}`).join("  ")}` : ""}`).join("\n\n"),
-        maxTokens: 12000,
+        maxTokens: 32000,
         slot: "cheap",
         signal,
+        splitOnTruncate: true,
       });
+      } catch (err) {
+        if (signal?.aborted) fail("已取消");
+        if (!(err?.truncated || /JSON|解析|截断/.test(String(err?.message || err)))) throw err;
+        if (batch.length > 2) { const half = Math.ceil(batch.length / 2); queue.unshift(batch.slice(0, half), batch.slice(half)); continue; }
+        console.warn(`[kaoyan] 难度评定跳过 ${batch.length} 题：${err?.message || err}`);
+        done += batch.length;
+        continue;
+      }
       // 重新读一次再写：后台评定和按钮评定可能同时在跑
       const cur = store.value("difficulty", { map: {}, at: null });
       const map = { ...(cur.map || {}) };
@@ -682,13 +788,15 @@ ${TIER_RUBRIC}
 
   /** 会话里逐题记录（不是题库原题的题）。result：独立做对 / 提示后做对 / 部分对。 */
   const RECORD_Q = { 独立做对: 1, 提示后做对: 0.6, 部分对: 0.5, 做错: 0 }; // 做错只由英语题（不进错题本）写入
-  function recordQuestion({ subject, topic, question, difficulty, result, note, chatId, src }) {
+  function recordQuestion({ subject, topic, question, difficulty, result, note, chatId, src, pointIds }) {
     const f = frame();
-    const hits = matchText(f, subject, topic, question);
-    const entry = { id: uid(), at: nowIso(), chatId: chatId || null, subject: subject || "", topic: str(topic, 200), question: str(question, 600), difficulty: d15(difficulty), result: RECORD_Q[result] != null ? result : "独立做对", q: RECORD_Q[result] ?? 1, note: str(note || "", 300), src: src || "会话" };
+    pointIds = validPointIds(pointIds, subject);
+    const hits = pointIds.length ? weights(pointIds) : matchText(f, subject, topic, question);
+    const entry = { id: uid(), at: nowIso(), chatId: chatId || null, subject: subject || "", topic: str(topic, 200), question: str(question, 600), difficulty: d15(difficulty), result: RECORD_Q[result] != null ? result : "独立做对", q: RECORD_Q[result] ?? 1, note: str(note || "", 300), src: src || "会话", pointIds };
     const list = store.list("qlog");
     list.push(entry);
     store.saveList("qlog", list);
+    coverage?.record({ subject, pointIds, status: result === "部分对" ? "部分做对" : result, chatId, question });
     const pooled = hits[0]?.level && hits[0].level !== "leaf";
     return { entry, leaves: pooled ? [`${hits[0].pool}（没对上具体考点，按${{ chapter: "章", module: "模块", subject: "科目" }[hits[0].level]}整体计）`] : hits.map((h) => f.leaves.get(h.id)?.name).filter(Boolean) };
   }
@@ -748,11 +856,12 @@ ${TIER_RUBRIC}
     const raw = String(query || "").toLowerCase().split(/[\s,，、;；/]+/).filter(Boolean);
     const terms = new Set(raw);
     for (const t of raw) if (/^[一-龥]{3,}$/.test(t)) for (let i = 0; i < t.length - 1; i++) terms.add(t.slice(i, i + 2));
+    const exactLeaves = new Set((subject ? [subject] : ["数学", "408"]).flatMap((s) => exactPoints(s, [query, ...raw]).map((point) => point.leaf)));
     const chapters = new Map();
     for (const l of f.leaves.values()) {
       if (subject && l.subject !== subject) continue;
       const key = `${l.subject}/${l.module}/${l.chapter}`;
-      let s = 0;
+      let s = exactLeaves.has(l.id) ? 45 : 0;
       for (const t of terms) {
         const w = t.length;
         if (l.chapter.toLowerCase().includes(t)) s += 3 * w;
@@ -777,10 +886,13 @@ ${TIER_RUBRIC}
     const view = new Map();
     for (const s of ev.subjects) for (const m of s.modules) for (const c of m.chapters) for (const l of c.leaves) view.set(l.id, l);
     const stats = leafStats();
+    const subjects = new Set(picked.map((c) => c.subject));
+    const recent = [...f.qMap.values()].filter((q) => isReal(q) && subjects.has(q.subject) && q.year >= new Date().getFullYear() - RECENT_YEARS);
+    const pending = recent.filter((q) => f.knowledge.get(q.id)?.status === "待核对").length;
     const done = progress.events().map;
     const doneTag = (q) => { const ev = done.get(q.id) || []; const last = ev[ev.length - 1]; return ev.length ? `做过·上次${last.correct === true ? "对" : last.correct === false ? "错" : "未判"}` : "没做过"; };
     const pct = (x) => `${Math.round((x || 0) * 100)}%`;
-    const out = [`考点频率表（「${query}」；近 ${RECENT_YEARS} 年 = ${new Date().getFullYear() - RECENT_YEARS} 年起；题数按自动归类权重计，可能有偏差，细分点考不考用 kaoyan_bank_search 核实）`];
+    const out = [`考点频率表（「${query}」；自 ${new Date().getFullYear() - RECENT_YEARS} 年起；题数按归类权重估计）`, `涉及科目有 ${pending}/${recent.length} 道近期真题尚待细归类；低频与零命中仍要核对覆盖清单。`];
     const leaves = [];
     for (const c of picked) {
       const rows = [...f.leaves.values()].filter((l) => l.subject === c.subject && l.module === c.module && l.chapter === c.chapter).map((l) => {
@@ -793,15 +905,67 @@ ${TIER_RUBRIC}
       out.push("考点｜近15年题数｜近15年分值｜常见题型｜预测分里的分值｜你的掌握｜做对过的最难档｜要继续涨需要的难度｜优先级");
       for (const r of rows) {
         const types = Object.entries(r.st.types).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t, n]) => `${t}${Math.round(n * 10) / 10}`).join(" ") || "—";
-        const rare = r.st.recent < 1.5 ? (r.st.recent < 0.5 ? "（近年基本没考）" : "（少考）") : "";
+        const rare = r.st.recent < 1.5 ? (r.st.recent < 0.5 ? "（当前频率表未命中）" : "（少考）") : "";
         out.push(`- ${r.name}${rare}｜${r.st.recent.toFixed(1)}｜${Math.round(r.st.pts)}｜${types}｜${r.points.toFixed(1)}｜${r.n ? pct(r.m) : "没有记录"}${r.due ? "·该复习" : ""}｜${r.top ? `${r.top} ${TIERS[r.top].name}` : "—"}｜${r.next} ${TIERS[r.next].name}及以上｜${r.priority.toFixed(1)}`);
         for (const q of r.st.qs.slice(0, 3)) out.push(`    · id=${q.id} ${q.paper || q.year || ""} 第${q.number}题（${q.type}·难度${qDiff(q)}·${doneTag(q)}）${String(q.stem || "").replace(/\s+/g, " ").slice(0, 90)}`);
         leaves.push(r);
       }
     }
     out.push("", `难度档：${TIERS.slice(1).map((T) => `${T.d} ${T.name}（掌握度上限 ${Math.round(T.cap * 100)}%）`).join("、")}。掌握度已经超过某档上限，再做这一档的题几乎不加分，出题要用「要继续涨需要的难度」及以上的题。`);
-    out.push("", "用法：复习会话按优先级（分值 ×（1 − 掌握））从高到低排节点；标「近年基本没考 / 少考」的不单独成节点。上面列的真题可以直接用 kaoyan_bank_get 取来当原型。");
-    return { text: out.join("\n"), leaves };
+    out.push("", "用法：复习会话按优先级（分值 ×（1 − 掌握））从高到低排节点；重点复习优先高频，按考纲查漏时也保留低频必考范围。上面列的真题可以直接用 kaoyan_bank_get 取来当原型。");
+    return { text: out.join("\n"), leaves, pending, coverage: coverageList(leaves.map((l) => l.id)) };
+  }
+
+  // ── 考纲知识点覆盖：会话记录 + 快练 / 模考 / 题库作答 / 错题重做 合并 ──
+  const covStatus = (qv, hinted) => (qv >= 1 ? (hinted ? "提示后做对" : "独立做对") : qv > 0 ? "部分做对" : "答错待复测");
+  const qualityOf = (e) => (e.score != null && e.max ? Math.max(0, Math.min(1, e.score / e.max)) : e.correct === true ? 1 : e.correct === false ? 0 : null);
+  function coverageEvents() {
+    const f = frame();
+    const out = [];
+    for (const [qid, evs] of progress.events().map) {
+      const q = f.qMap.get(qid);
+      if (!q || !["数学", "408"].includes(q.subject)) continue;
+      const tested = f.knowledge.get(qid)?.tested || [];
+      for (const e of evs) {
+        const qv = qualityOf(e);
+        if (qv == null || !e.at) continue;
+        const ids = validPointIds(e.pointIds, q.subject);
+        for (const pointId of ids.length ? ids : tested) out.push({ pointId, status: covStatus(qv, e.hinted), at: e.at, question: `${q.paper || "题库"} 第${q.number}题` });
+      }
+    }
+    for (const m of store.list("mistakes")) {
+      if (m.bankId) continue;
+      for (const pointId of validPointIds(m.pointIds, m.subject)) {
+        if (m.createdAt) out.push({ pointId, status: "答错待复测", at: m.createdAt, question: m.question });
+        for (const h of m.history || []) if ((h.correct === true || h.correct === false) && h.at) out.push({ pointId, status: h.correct ? "独立做对" : "答错待复测", at: h.at, question: `${m.topic}（重做）` });
+      }
+    }
+    return out;
+  }
+  /** 每个知识点近 15 年被真题直接考查的题数（只算已细归类 / 已核对的题）。 */
+  let freqCache = null;
+  function pointFreq() {
+    const f = frame();
+    if (freqCache?.f === f) return freqCache.map;
+    const map = new Map();
+    const from = new Date().getFullYear() - RECENT_YEARS;
+    for (const q of f.qMap.values()) {
+      if (!isReal(q) || !(q.year >= from)) continue;
+      for (const id of f.knowledge.get(q.id)?.tested || []) map.set(id, (map.get(id) || 0) + 1);
+    }
+    freqCache = { f, map };
+    return map;
+  }
+  function coverageList(leafIds) {
+    if (!coverage) return [];
+    const freq = pointFreq();
+    return coverage.list(leafIds, coverageEvents()).map((r) => ({
+      ...r,
+      recent: freq.get(r.id) || 0,
+      outline: (itemsOfPoint.get(r.id) || []).map((i) => i.item),
+      extension: !itemsOfPoint.has(r.id),
+      pending: r.name.includes("待核"),
+    }));
   }
 
   /** 关键词和 AI 都还没归上考点的数学 / 408 题（交给后台 AI 归类；归上之前计分时按章 / 模块 / 科目兜底）。 */
@@ -809,7 +973,7 @@ ${TIER_RUBRIC}
     const f = frame();
     return [...f.qMap.values()].filter((q) => ["数学", "408"].includes(q.subject) && !f.mapQ(q).length).map((q) => q.id);
   }
-  return { frame, overview, evaluate, measure, diff, settle, unsettled, classifyBank, questionsOf, collect, focus, rateBank, queueRate, queueClassify, recordQuestion, unmappedIds, TIERS, qDiff };
+  return { frame, invalidateFrame: () => { frameCache = null; statCache = null; }, overview, evaluate, measure, diff, settle, unsettled, classifyBank, questionsOf, collect, focus, rateBank, queueRate, queueClassify, classifyStatus, recordQuestion, unmappedIds, coverageList, pointFreq, TIERS, qDiff };
 }
 
 module.exports = { createScore };

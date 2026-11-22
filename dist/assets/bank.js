@@ -158,7 +158,7 @@ export function mountBank(ctx, container, signal) {
               for (const c of [...det.children]) if (c.tagName !== "SUMMARY") c.remove();
             } catch (err) { reset(aiBox, errorBox(err)); }
           }, "ky-btn ky-btn-ghost")) : null,
-          (q.topics || []).length ? el("div", "ky-muted", `考点：${q.topics.join("、")}`) : null);
+          q.knowledge ? el("div", "ky-muted", q.knowledge) : (q.topics || []).length ? el("div", "ky-muted", `考点：${q.topics.join("、")}`) : null);
         const refresh = async () => {
           const fresh = (await ctx.call("bank.list", q.paper ? { paper: q.paper, limit: 500 } : { q: q.stem.slice(0, 20), limit: 100 })).items.find((x) => x.id === q.id);
           if (fresh) Object.assign(q, fresh);
@@ -211,15 +211,16 @@ export function mountBank(ctx, container, signal) {
   function renderSearch() {
     const q = el("input", { class: "ky-input", placeholder: "关键词（题干 / 考点）" });
     const subj = select([["", "全部科目"], ...SUBJECTS], "", () => {});
+    const source = select([["全部", "全部来源"], "真题", "习题"], "全部", () => {});
     const out = el("div");
     const go = async () => {
       try {
-        const r = await ctx.call("bank.list", { q: q.value.trim(), subject: subj.value, limit: 100 });
+        const r = await ctx.call("bank.list", { q: q.value.trim(), subject: subj.value, source: source.value, knowledge: true, limit: 100 });
         reset(out, el("div", "ky-muted", `共 ${r.total} 题${r.total > 100 ? "，显示前 100" : ""}`), ...r.items.map((x) => questionCard(x)));
       } catch (err) { reset(out, errorBox(err)); }
     };
     q.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-    put(body, el("div", "ky-row", subj, q, btn("搜索", go, "ky-btn ky-btn-primary")), out);
+    put(body, el("div", "ky-row", subj, source, q, btn("搜索", go, "ky-btn ky-btn-primary")), out);
   }
 
   /** 识别用的 OCR 模型 + 并行页数，改了立即保存。 */
@@ -400,6 +401,7 @@ export function mountBank(ctx, container, signal) {
     };
     const done = (r) => {
       reset(out, el("div", "ky-ok", `✓ 导入完成：新增 ${r.added} 题，更新 ${r.updated} 题${r.answered ? `，合并答案 ${r.answered} 题` : ""}。`),
+        r.issues?.length ? el("div", "ky-notice", ...r.issues.map((issue) => el("div", null, issue))) : null,
         btn("查看这套题", () => { tab = "papers"; current = paper.value.trim(); load(); }));
       ctx.call("bank.papers").then((p) => {
         papers = p;

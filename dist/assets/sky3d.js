@@ -804,12 +804,10 @@ export function mountScore(ctx, container, signal) {
     const s = data.subjects.find((x) => x.key === key);
     const so = L.subjects.find((x) => x.key === key);
     const leaves = s.modules.flatMap((m) => m.chapters.flatMap((c) => c.leaves));
-    const gain = leaves.filter((l) => !l.vocab).map((l) => ({ ...l, gap: l.points - l.score })).sort((a, b) => b.gap - a.gap).slice(0, 5);
     const due = leaves.filter((l) => l.due && !l.vocab).sort((a, b) => (b.loss || 0) - (a.loss || 0));
     openPanel(
       head("科目", s.name, s.score, s.max),
       due.length ? el("section", "sk-sec", el("h4", "sk-h sk-h-due", `该复习（${due.length}）`), ...more(due.slice(0, 12).map(leafRow), 3, `再看 ${Math.min(12, due.length) - 3} 个`)) : null,
-      el("section", "sk-sec", el("h4", "sk-h", "最值得补"), el("p", "sk-note", "按「分值 − 已拿到的分」排，先补这些预测分涨得最快。"), ...more(gain.map(leafRow), 3, `再看 ${gain.length - 3} 个`)),
       el("section", "sk-sec",
         el("h4", "sk-h", "模块"),
         ...s.modules.map((m) => el("details", { class: "sk-card", open: s.modules.length === 1 },
@@ -821,11 +819,32 @@ export function mountScore(ctx, container, signal) {
   }
   /** 先列 n 个，其余收进「再看几个」。 */
   const more = (rows, n, label) => (rows.length > n + 1 ? [...rows.slice(0, n), el("details", "sk-more", el("summary", null, label), ...rows.slice(n))] : rows);
+  function coveragePanel(subject, topic, leaves) {
+    if (!["数学", "408"].includes(subject)) return null;
+    const content = el("div", "sk-list", el("p", "sk-note", "正在读取知识点…"));
+    const panel = el("section", "sk-sec", el("h4", "sk-h", "考纲知识点"), content);
+    ctx.call("score.coverage", { leaves }).then((points) => {
+      const needed = points.filter((p) => p.status !== "独立做对").length;
+      // 未测、答错待复测的排前面；同状态按近 15 年真题题数从多到少
+      const order = { 答错待复测: 0, 未测: 1, 已讲待测: 2, 部分做对: 3, 提示后做对: 4, 独立做对: 5 };
+      const sorted = points.slice().sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || (b.recent || 0) - (a.recent || 0));
+      const rows = sorted.map((p) => el("div", "sk-chrow",
+        el("span", "sk-chrow-name", p.name.replace("（整理稿条目·待核）", ""), el("small", "sk-note", ` ${p.recent || 0}题${p.pending ? " · 待核" : p.extension ? " · 延伸" : ""}`)),
+        el("span", "sk-row-num", p.status),
+        p.question ? el("small", "sk-note", p.question) : null));
+      reset(content,
+        el("p", "sk-note", `${points.length} 项 · 待测 ${needed}`),
+        ...more(rows, 6, "查看全部知识点"));
+    }, (err) => reset(content, errorBox(err)));
+    return panel;
+  }
+
   function showChapter(cs) {
     redo = () => showChapter(cs);
     const c = cs.c;
     openPanel(
       head(`${SUBJ[cs.subject].short} / ${MOD_SHORT[cs.module] || cs.module}`, cs.name, c.score, c.max),
+      coveragePanel(cs.subject, cs.name, c.leaves.map((l) => l.id)),
       el("section", "sk-sec", el("h4", "sk-h", `考点（${c.leaves.length}）`), ...c.leaves.slice().sort((a, b) => b.points - a.points).map(leafRow)));
   }
   function practiceIds(ids, subject, title) {
@@ -841,28 +860,21 @@ export function mountScore(ctx, container, signal) {
     if (l.vocab) { showVocab(hit); return; }
     const [stt, cls] = state(l);
     const qinfo = el("div", "sk-list");
-    const actions = el("div", "sk-actions");
     const forecast = (days) => {
       if (!l.last) return 0;
       const tt = (Date.now() - Date.parse(l.last)) / 86400000 + days;
       return l.points * l.m * (0.6 + 0.4 / (1 + tt / (9 * l.S)));
     };
-    const practice = btn("用真题练这个考点", null, "sk-btn sk-btn-primary");
-    practice.disabled = true;
-    put(actions, practice, btn("复制学习开场白", async () => {
-      const text = l.n ? `${l.name}（复习，按考研难度直接练真题考法）` : `【学习】${l.name}`;
-      toast(root, (await copy(text)) ? `已复制：${text}` : text);
-    }, "sk-btn"));
     const ev = l.evidence || [];
     openPanel(
       head(`${SUBJ[s.key].short} / ${hit.c.name}`, l.name, l.score, l.points, el("span", `sk-st ${cls}`, stt), nextCap(l), l.due),
       el("div", "sk-stats",
-        el("div", "sk-stat", el("span", null, "掌握度"), el("b", null, pct(l.m)), el("small", null, l.n ? `${l.n} 道题 / 记录${l.top ? ` · 做对过最难：${TIER_NAMES[l.top]}` : ""}` : "还没有记录")),
-        el("div", "sk-stat", el("span", null, "记忆保持"), el("b", null, l.last ? pct(l.R) : "—"), el("small", null, l.last ? `稳定约 ${Math.round(l.S)} 天` : "还没学过")),
-        el("div", "sk-stat", el("span", null, "历年真题"), el("b", null, `${Math.round(l.realCount || 0)}`), el("small", null, "道左右考到"))),
-      actions,
-      el("p", "sk-note", l.last ? (l.due ? `上次学是 ${ago(l.last)}，记忆掉到 ${pct(l.R)}，该复习了。` : `上次学是 ${ago(l.last)}，约 ${fmtDate(l.dueAt)} 该复习。`) + `不复习的话，30 天后约 ${f1(forecast(30))} 分，90 天后约 ${f1(forecast(90))} 分。` : "在会话里学过并结算、或做对练习题和真题后，这颗星会亮起来。"),
+        el("div", "sk-stat", el("span", null, "掌握度"), el("b", null, pct(l.m)), el("small", null, `${l.n || 0} 条记录`)),
+        el("div", "sk-stat", el("span", null, "记忆保持"), el("b", null, l.last ? pct(l.R) : "—"), el("small", null, l.last ? `稳定 ${Math.round(l.S)} 天` : "—")),
+        el("div", "sk-stat", el("span", null, "历年真题"), el("b", null, `${Math.round(l.realCount || 0)}`), el("small", null, "道"))),
+      l.last ? el("p", "sk-note sk-facts", `上次 ${ago(l.last)} · ${l.due ? "该复习" : `复习 ${fmtDate(l.dueAt).slice(5)}`} · 30天后 ${f1(forecast(30))} · 90天后 ${f1(forecast(90))}`) : null,
       tierLadder(l),
+      coveragePanel(s.key, l.name, [l.id]),
       el("section", "sk-sec", el("h4", "sk-h", "相关真题"), qinfo),
       el("section", "sk-sec",
         ev.length ? el("details", "sk-more",
@@ -873,42 +885,34 @@ export function mountScore(ctx, container, signal) {
             el("span", "sk-ev-label", e.label, e.note ? el("small", null, e.note) : null),
             el("b", e.delta >= 0 ? "sk-up" : "sk-down", `${e.delta >= 0 ? "+" : ""}${e.delta.toFixed(2)}`))))) : el("p", "sk-note", "还没有分数记录。")));
     ctx.call("score.questions", { leaf: l.id, limit: 10 }).then((r) => {
-      if (!r.total) { practice.remove(); reset(qinfo, el("p", "sk-note", "题库里没有归到这个考点的真题。可以开练习会话让 AI 按真题难度出题。")); return; }
-      practice.disabled = false;
-      practice.addEventListener("click", () => practiceIds(r.items.slice(0, 8).map((x) => x.id), s.key, `真题：${l.name}`));
+      if (!r.total) { reset(qinfo, el("p", "sk-note", "0 道")); return; }
       const rows = r.items.map((q) => { const kind = q.done ? (q.lastCorrect ? "good" : "bad") : "todo"; return el("button", { type: "button", class: "sk-row-btn sk-q", title: kind === "good" ? "做对过" : kind === "bad" ? "做错过" : "还没做", onclick: () => showPlanet(q, kind) },
         el("i", `sk-orb sk-orb-${kind}`), el("span", "sk-row-name", `${q.paper} 第${q.number}题`), el("span", "sk-row-num", `${TIER_NAMES[q.d] || ""}  ${q.type}  ${q.score || "?"}分`)); });
-      reset(qinfo, el("p", "sk-note", `题库里 ${r.total} 道，做过 ${r.done} 道。实心点＝做对过，空心圈＝做错过，虚线圈＝还没做。`), ...more(rows, 5, `再看 ${rows.length - 5} 道`));
-    }, () => { practice.remove(); reset(qinfo); });
+      reset(qinfo, el("p", "sk-note", `${r.total} 道 · 做过 ${r.done}`), ...more(rows, 5, `再看 ${rows.length - 5} 道`));
+    }, () => reset(qinfo));
   }
   /** 下一档的掌握度上限（刻度尺上的竖线）。 */
   const nextCap = (l) => { const tiers = data.tiers || []; if (!tiers.length || !l.n) return null; const m = l.m || 0; const T = tiers.find((x) => x.cap > m + 0.03); return T ? T.cap : null; };
-  /** 难度阶梯：每档有掌握度上限；超过某档上限后，这一档的题几乎不再加分。 */
+  /** 难度阶梯：五档按掌握度区间宽度并排，一条分段刻度显示当前掌握度；档的说明放在悬停提示里。 */
   function tierLadder(l) {
     const tiers = data.tiers || [];
     if (!tiers.length) return null;
     const m = l.m || 0;
     const next = tiers.find((T) => T.cap > m + 0.03) || tiers[tiers.length - 1];
-    const tip = !l.n ? "从「基础」「简单」题开始做，每做对一题这颗星就亮一点。"
-      : m >= 0.97 ? "已经满了：各档的题都做对过。之后注意隔一段时间复习。"
-      : `现在掌握 ${pct(m)}：${next.d > 1 ? `${tiers.slice(0, next.d - 1).map((T) => T.name).join("、")}题已经加不了多少分，` : ""}做「${next.name}」及以上的题才能继续涨。`;
-    const near = (T) => Math.abs(T.d - next.d) <= 1;
-    const rows = tiers.map((T) => {
-        const lo = T.d > 1 ? tiers[T.d - 2].cap : 0;
-        const fill = clamp((m - lo) / (T.cap - lo), 0, 1);
-        const cls = fill >= 0.97 ? " sk-tier-full" : T.d === next.d ? " sk-tier-now" : "";
-        return el("div", `sk-tier${cls}`,
-          el("span", "sk-tier-name", T.name, el("small", null, `到 ${Math.round(T.cap * 100)}%`)),
-          el("span", "sk-tier-bar", el("i", { style: `width:${fill * 100}%` })),
-          el("span", "sk-tier-tag", (l.top || 0) >= T.d ? "做对过" : T.d === next.d ? "下一步" : ""),
-          el("small", "sk-tier-desc", T.desc));
+    const cols = tiers.map((T, i) => `${Math.round((T.cap - (i ? tiers[i - 1].cap : 0)) * 100)}fr`).join(" ");
+    const cells = tiers.map((T, i) => {
+      const lo = i ? tiers[i - 1].cap : 0;
+      const fill = clamp((m - lo) / (T.cap - lo), 0, 1);
+      const done = (l.top || 0) >= T.d;
+      const cls = T.d === next.d && m < 0.97 ? " sk-tier-now" : done ? " sk-tier-done" : "";
+      return el("div", { class: `sk-tier${cls}`, title: `${T.name}：${T.desc}` },
+        el("span", "sk-tier-name", T.name, done ? el("small", null, " ✓") : null),
+        el("span", "sk-tier-bar", el("i", { style: `width:${fill * 100}%` })),
+        el("small", "sk-tier-cap", `${Math.round(T.cap * 100)}%`));
     });
-    const shown = rows.filter((_, i) => near(tiers[i])), rest = rows.filter((_, i) => !near(tiers[i]));
     return el("section", "sk-sec",
       el("h4", "sk-h", "难度阶梯"),
-      el("p", "sk-note", tip),
-      el("div", "sk-tiers", ...shown),
-      rest.length ? el("details", "sk-more", el("summary", null, `其余 ${rest.length} 档`), el("div", "sk-tiers", ...rest)) : null);
+      el("div", { class: "sk-tiers", style: `grid-template-columns:${cols}` }, ...cells));
   }
   function showPlanet(q, kind) {
     const st = nav.star;
@@ -959,6 +963,72 @@ export function mountScore(ctx, container, signal) {
       data.review.length ? el("div", "sk-list", ...data.review.map((x, i) => { const h = findLeaf(x.id); return h ? leafRow(h.l, i) : null; })) : el("p", "sk-note", "现在没有需要复习的考点。"));
   }
 
+  // ── 题目知识点归类：有没归的题才显示 ──
+  const CLASSIFY_RULES = [
+    "只归数学一、408 的真题和习题；先真题（新年份在前），后习题",
+    "每题标「直接考查」和「解题方法」，各最多 6 个，选最细的知识点",
+    "依据题干、选项和解析，原标签只作参考",
+    "逐项判断的选择题，每个选项涉及的知识点都算直接考查",
+    "对不上任何知识点的题记为「无可归类」，不再重复归",
+    "人工核对过的题不改；每 20 题一批，每批保存",
+  ];
+  function classifyBox() {
+    const box = el("details", { class: "sk-pop-adv", hidden: true });
+    const facts = el("p", "sk-pop-p sk-facts");
+    const msg = el("p", "sk-pop-p sk-facts");
+    const pick = el("select", { class: "sk-select", "aria-label": "归类用的模型" });
+    const startBtn = btn("开始归类", () => run(ctx.call("score.classify", {})), "sk-btn sk-btn-primary");
+    const pauseBtn = btn("暂停", async () => { pauseBtn.disabled = true; try { await ctx.call("score.classifyPause", {}); } catch (err) { reset(msg, errorBox(err)); } }, "sk-btn");
+    let watching = null;
+    const setRunning = (on) => { startBtn.hidden = on; pauseBtn.hidden = !on; pauseBtn.disabled = false; pick.disabled = on; };
+    const show = (st) => {
+      const pending = st.真题.pending + st.习题.pending;
+      box.hidden = !pending && !st.running;
+      reset(facts, `待归类 真题 ${st.真题.pending} · 习题 ${st.习题.pending}　已归 ${st.真题.done + st.习题.done}`);
+      return pending;
+    };
+    const refresh = () => ctx.call("score.classifyStatus", {}).then(show);
+    async function run(jobPromise) {
+      setRunning(true);
+      try {
+        const job = await jobPromise;
+        if (watching === job.id) return;
+        watching = job.id;
+        const r = await waitJob(ctx, job, (j) => { reset(msg, `${j.message || "归类中"}${j.total ? `（${j.done}/${j.total}）` : ""}`); });
+        reset(msg, `完成 ${r.done} 道 · 有知识点 ${r.ok} · 无可归类 ${r.empty}${r.failed ? ` · 失败 ${r.failed}（下次再归）：${r.error}` : ""}`);
+        load(true);
+      } catch (err) {
+        if (/暂停|取消/.test(err.message)) reset(msg, "已暂停，已归的都保存了");
+        else reset(msg, errorBox(err));
+      } finally {
+        watching = null;
+        setRunning(false);
+        refresh().catch(() => {});
+      }
+    }
+    put(box,
+      el("summary", null, "题目知识点归类"),
+      facts,
+      el("ol", "sk-rules", ...CLASSIFY_RULES.map((r) => el("li", null, r))),
+      el("label", "sk-field", el("span", null, "模型"), pick),
+      el("div", "sk-pop-actions", startBtn, pauseBtn),
+      msg);
+    setRunning(false);
+    Promise.all([ctx.call("score.classifyStatus", {}), ctx.call("models.list")]).then(([st, models]) => {
+      const cur = st.model ? `${st.model.provider}::${st.model.id}` : "";
+      put(pick, el("option", { value: "" }, "跟随「便宜」模型槽"), ...models.map((m) => el("option", { value: `${m.provider}::${m.id}` }, m.name || m.id)));
+      pick.value = cur;
+      pick.addEventListener("change", async () => {
+        const [provider, id] = pick.value ? pick.value.split("::") : [];
+        try { await ctx.call("settings.save", { classifyModel: pick.value ? { provider, id } : null }); toast(root, pick.value ? `归类改用 ${id}` : "归类跟随便宜模型槽"); }
+        catch (err) { reset(msg, errorBox(err)); }
+      });
+      show(st);
+      if (st.running) { box.open = true; run(Promise.resolve(st.running)); }
+    }, () => { box.hidden = true; });
+    return box;
+  }
+
   // ── 问号弹层：怎么读、全亮预览、高级 ──────────────────────
   function closePop() { pop.classList.remove("sk-on"); }
   function openPop() {
@@ -992,18 +1062,8 @@ export function mountScore(ctx, container, signal) {
             const r = await waitJob(ctx, job, (j) => { msg.textContent = `${j.message || "评定中"}${j.total ? `（${j.done}/${j.total}）` : ""}`; });
             reset(out, el("p", "sk-pop-p", `完成：${r.rated}/${r.total} 道已评。`)); load(true);
           } catch (err) { reset(out, errorBox(err)); }
-        }, "sk-btn"))),
-      el("details", "sk-pop-adv",
-        el("summary", null, "高级 · 真题考点归类"),
-        el("p", "sk-pop-p", `每道真题要先归到考点上，才能算出每个考点值多少分、刷题时给哪颗星加分。现在按题目自带的考点标签做关键词匹配（${fi.mapped}/${fi.total} 道归上了），偶尔会归错；让 AI 逐题看题干重新归一遍会更准，分值和加分都会跟着变准。约 70 次便宜模型调用，可以中途停下、下次接着来。`),
-        el("div", "sk-pop-actions", btn(fi.aiCount ? `已归 ${fi.aiCount} 道 · 补归新题` : "用 AI 重新归类", async () => {
-          try {
-            const job = await ctx.call("score.classify", {});
-            const msg = el("p", "sk-pop-p", "开始…"); reset(out, msg);
-            const r = await waitJob(ctx, job, (j) => { msg.textContent = `${j.message || "归类中"}${j.total ? `（${j.done}/${j.total}）` : ""}`; });
-            reset(out, el("p", "sk-pop-p", `完成：${r.mapped}/${r.total} 道已归类。`)); load(true);
-          } catch (err) { reset(out, errorBox(err)); }
-        }, "sk-btn")), out));
+        }, "sk-btn")), out),
+      classifyBox());
     pop.classList.add("sk-on");
   }
 

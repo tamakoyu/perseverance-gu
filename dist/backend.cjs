@@ -10,6 +10,7 @@ const { createNotes } = require("./server/notes.cjs");
 const { createPdf } = require("./server/pdf.cjs");
 const { createJobs } = require("./server/jobs.cjs");
 const { createBank } = require("./server/bank.cjs");
+const { repairChoiceKeys, restore2011Question } = require("./server/bank-repairs.cjs");
 const { createEnglish } = require("./server/english.cjs");
 const { createStats } = require("./server/stats.cjs");
 const { createEngImport } = require("./server/engimport.cjs");
@@ -20,6 +21,7 @@ const { createPack } = require("./server/pack.cjs");
 const { createProgress } = require("./server/progress.cjs");
 const { createMomo } = require("./server/momo.cjs");
 const { createScore } = require("./server/score.cjs");
+const { byId: knowledgeById, createCoverage, validPointIds } = require("./server/knowledge.cjs");
 const { createPaper } = require("./server/paper.cjs");
 const { createHostPrompts } = require("./server/hostprompts.cjs");
 const { transcriptText } = require("./server/notes.cjs");
@@ -30,6 +32,7 @@ const DEFAULT_SETTINGS = {
   papersPath: "",
   examDate: "2027-12-18",
   ocrModel: null,
+  classifyModel: null,
   importConcurrency: 6,
   studyMode: true,
   autoExportPrompt: true,
@@ -82,8 +85,11 @@ const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插�
 
 ## 题库与考点频率（考研工具箱插件）
 题库里有历年数学一、408、英语一真题（含答案和解析）；以后导入的习题书题目标「习题」。可用工具：
-- kaoyan_exam_focus：按章节或考点查考点频率表，包括近 15 年题数和分值、常见题型、学习者掌握度、最近几道真题。**规划前必查**；讲什么、讲多深、先讲什么都以它为准。统计是按关键词自动归类的，可能有偏差；某个细分点（如「子列」「函数方程」）考不考，用 kaoyan_bank_search 搜它，看近 15 年命中几道。
-- kaoyan_bank_search：按考点或关键词检索题目，返回 id、出处、题型、题干摘要（不含答案）。检索词要具体（「周期 抽象函数」「反常积分 比较判别」），不要只用「函数」「积分」这种泛词。
+- kaoyan_exam_focus：按章节或考点查考点频率表，包括近 15 年题数和分值、常见题型、学习者掌握度、最近几道真题。**规划前必查**；讲什么、讲多深、先讲什么都以它为准。统计是按关键词自动归类的，可能有偏差；某个细分点用 kaoyan_coverage 查是否在纲，再用 kaoyan_bank_search 核实历史考法。
+- kaoyan_bank_search：按具体关键词或知识点编号检索题库。核对历年考法、测底和综合检验时优先传 source="真题"，课中单点检查和错后变式优先检索 source="习题"，找不到适合的再用真题或改编。答案待核的题先复核或换题。
+- kaoyan_coverage：数一或 408 测底、规划时与频率表一起查。重点复习按优先级排，未排进本轮的考纲点留在清单待测。用户说「按考纲查漏」时，按知识点清单优先未测和答错待复测，包括低频项。每轮按已学范围控制题量。
+- 知识点已按考试大纲细分到条目（数一约 380 项、408 约 430 项，每条大纲要求都有对应项）。清单每项带「近15年真题直接考查题数」和标记：「延伸」= 大纲没单列但常考的方法，「待核」= 只有第三方整理稿列出、低优先级。填 pointIds 时选最细的那一项（例如只考 CRC 就填「检错编码」，不要连「纠错编码」一起填）。快练、模考和题库作答会按题目的细归类自动更新清单状态。
+- 课中讲完某个知识点可调用 kaoyan_mark_taught。每道检查题、练习题或测底题作答后，在对应记录工具上填知识点编号 pointIds，只填题目实际检验的知识点；提示后答对用 hinted 或对应 result，不得把用来讲解的方法也记作已测。结算后用清单说明这一轮已测和待测项。
 - kaoyan_bank_get：按 id 取一道题的完整内容（题干、选项、答案、解析）。**答案和解析只给你自己看**，学习者作答前绝不能透露；标了「AI 解答 / AI 补写」的答案可能有误，先自己核对。
 - **省往返**：规划时在同一个回合里并行发出 kaoyan_exam_focus、各主要考点的 kaoyan_bank_search（limit 8–10）和读笔记，不要一个一个等。介绍计划时说明「这个点近 15 年考了 n 次」。
 
@@ -131,7 +137,7 @@ const VAULT_TEXT = `## 学习者的 Obsidian 考研笔记（考研工具箱插�
 
 const PROBER_EXAM = `## 测底（考研工具箱插件；与通用测底规则冲突时以本节为准）
 学习模式、讲题模式不测底时，忽略本节。
-- 测底前先查 kaoyan_exam_focus，只测这一章的高频考点。题目优先用题库原题（kaoyan_bank_search / kaoyan_bank_get，答案只给你自己看），题太长就截取关键一步改成选择题。不出逻辑辨析、ε 证明、竞赛风格的题。3–6 道就够。
+- 测底前先查 kaoyan_exam_focus 与 kaoyan_coverage，重点复习先测这一章的高频考点；按考纲查漏时按知识点的未测和待复测状态挑题。题目优先用真题（kaoyan_bank_search / kaoyan_bank_get，答案只给你自己看），题太长就截取关键一步改成选择题。不出逻辑辨析、ε 证明、竞赛风格的题。3–6 道就够。
 - 每道测底题判定后按「逐题记录」记录：题库原题用 kaoyan_bank_record；其他题答对用 kaoyan_record_question、答错用 kaoyan_log_mistake；都带难度档 difficulty（1 基础 … 5 压轴）。
 - **答错要讲**：答错或答「不知道」时，出下一题之前先用 3–6 行讲清楚：正确答案；他可能是怎么想的、错在哪一步；正确思路的关键步骤（一步一行）。不展开成完整教学，但不能让学习者带着「不知道为什么错」往下做。
 - probe_done 的 assessment 按考点写：会做哪些题型、在哪类题上出错、错因（概念 / 方法 / 计算）、还有哪些没测到。`;
@@ -239,8 +245,10 @@ exports.activate = (ctx) => {
   const pdf = createPdf(ctx.dataDirectory);
   const jobs = createJobs(ctx);
   const bank = createBank({ store, llm, pdf, images, getSettings: settings, getPapersRoot: () => papersRoot() });
+  repairChoiceKeys(store);
   const english = createEnglish({ store, llm });
   const progress = createProgress({ store, bank });
+  const coverage = createCoverage(store);
   const stats = createStats({ ctx, store, vault, bank });
   const engImport = createEngImport({ store, llm, pdf, images, bank, getSettings: settings });
   const engPractice = createEngPractice({ store, llm, bank });
@@ -249,16 +257,22 @@ exports.activate = (ctx) => {
     onNav: (d) => { try { ctx.events.emit("pad", { ...d, nav: true }); } catch { /* ignore */ } } });
   const changed = (what) => { try { ctx.events.emit("changed", { what }); } catch { /* ignore */ } };
   const momo = createMomo({ store, getToken: () => String(settings().momoToken || "").trim() });
-  const score = createScore({ ctx, store, bank, llm, progress, momo, getSettings: settings, transcriptText, classify: (t) => stats.classify(t), onChange: () => changed("score") });
+  const score = createScore({ ctx, store, bank, llm, progress, coverage, momo, getSettings: settings, transcriptText, classify: (t) => stats.classify(t), onChange: () => changed("score") });
+  restore2011Question({ store, pdf, images, folder: papersRoot(), signal: ctx.signal }).then((repaired) => {
+    if (!repaired) return;
+    score.invalidateFrame();
+    changed("bank");
+    changed("score");
+  }).catch((err) => console.warn(`[kaoyan] 2011 408 第47题恢复失败：${err.message}`));
   const paper = createPaper({ ctx, store, llm, pdf, images, bank, addMistake: (input) => addMistake(input), changed });
   const hostPrompts = createHostPrompts({ ctx, store });
-  // 启动 20 秒后：之前没归上考点 / 没评上难度的习题书题目，以及关键词对不上考点的真题，在后台补上（导入时的后台调用可能失败过）
+  // 启动 20 秒后：还没细归类的数学 / 408 题、还没评难度的题，在后台补上（之前的调用可能失败过；queueClassify / queueRate 只收没做过的）
   setTimeout(() => {
     if (ctx.signal.aborted) return;
     try {
-      const ids = bank.all().filter((q) => q.source === "习题").map((q) => q.id);
-      score.queueClassify([...ids, ...score.unmappedIds()]);
-      score.queueRate(ids);
+      const all = bank.all();
+      score.queueClassify(all.filter((q) => ["数学", "408"].includes(q.subject) && q.source !== "AI生成").map((q) => q.id));
+      score.queueRate(all.map((q) => q.id));
     } catch { /* 下次启动再补 */ }
   }, 20000);
   let momoSyncing = null;
@@ -392,6 +406,7 @@ exports.activate = (ctx) => {
       images: Array.isArray(input.images) ? input.images.filter((x) => typeof x === "string") : [],
       chatId: input.chatId || null,
       bankId: input.bankId || null,
+      pointIds: validPointIds(input.pointIds, input.subject),
       difficulty: Number.isInteger(input.difficulty) && input.difficulty >= 1 && input.difficulty <= 5 ? input.difficulty : null,
       card: fsrs.newCard(),
       history: [],
@@ -462,6 +477,13 @@ exports.activate = (ctx) => {
 
   /** 每个会话里用 kaoyan_bank_get 取过的题（会话被压缩成摘要后，模型自己记不住用过哪些）。重启后靠 bankLog / 错题里的 chatId 兜底。 */
   const usedInChat = new Map();
+  const pointIdsSchema = { type: "array", maxItems: 8, items: { type: "string", maxLength: 500 }, description: "实际检验的知识点编号，从 kaoyan_coverage 查出。只填真正考到的点。" };
+  const knowledgeSummary = (q, entry) => {
+    const names = (ids) => (ids || []).map((id) => knowledgeById.get(id)?.name).filter(Boolean).join("、");
+    const tested = names(entry?.tested);
+    const methods = names(entry?.methods);
+    return [tested ? `直接考查：${tested}` : `原标签：${q.topics.join("、") || "—"}`, methods && `解题方法：${methods}`, entry?.status].filter(Boolean).join(" · ");
+  };
   ctx.registerTools({
     agents: ["teacher", "practice", "prober"],
     create: (context) => {
@@ -493,26 +515,45 @@ exports.activate = (ctx) => {
       tools.push(
         {
           name: "kaoyan_bank_search",
-          label: "检索真题",
-          description: "在学习者的真题题库里按考点 / 关键词检索历年真题（中文关键词用空格分开），返回 id、出处、题型、题干摘要和考点，不含答案。",
+          label: "检索题库",
+          description: "检索真题和习题。测底及考频核实传 source 真题，课中检查或错后变式可传习题。可按知识点编号检索，即使该词不在题干。返回题干摘要、出处、考查知识点、方法和答案来源，不含答案。",
           parameters: {
             type: "object",
             properties: {
               query: { type: "string", minLength: 1, maxLength: 200, description: "考点或关键词，如「反常积分 比较判别」「二叉树 遍历」" },
+              source: { type: "string", enum: ["全部", "真题", "习题"] },
+              pointId: { type: "string", maxLength: 500, description: "来自 kaoyan_coverage 的知识点编号" },
               subject: { type: "string", enum: ["数学", "408", "英语", "政治"] },
               type: { type: "string", enum: ["单选", "多选", "填空", "解答", "完形", "阅读", "新题型", "翻译", "小作文", "大作文", "分析"] },
               yearFrom: { type: "integer", minimum: 1987, maximum: 2100 },
               yearTo: { type: "integer", minimum: 1987, maximum: 2100 },
               limit: { type: "integer", minimum: 1, maximum: 20 },
             },
-            required: ["query"],
             additionalProperties: false,
           },
           execute: async (_id, input, signal) => {
             guard(signal);
+            if (!input.query && !input.pointId) fail("请填写关键词或知识点编号");
             const want = Math.max(1, Math.min(20, input.limit || 8));
-            const found = bank.search(input.query, { ...input, limit: Math.min(20, want * 2) });
-            if (!found.length) return textResult(`题库里没有找到和「${input.query}」相关的真题。`, { hits: [] });
+            const frame = score.frame();
+            const point = input.pointId && knowledgeById.get(input.pointId);
+            if (input.pointId && !point) fail("知识点编号不存在，请先查考纲覆盖清单");
+            const findByPoint = point && ((q) => {
+              const entry = frame.knowledge.get(q.id);
+              return !!entry && [...entry.tested, ...entry.methods, ...(entry.suggested || [])].includes(point.id);
+            });
+            const extraTopics = (q) => {
+              const entry = frame.knowledge.get(q.id);
+              return entry && [...entry.tested, ...entry.methods].map((id) => knowledgeById.get(id)?.name).join(" ");
+            };
+            let found = bank.search(point ? "" : input.query, { ...input, matchPoint: findByPoint, extraTopics, limit: Math.min(20, want * 2) });
+            // 题目还没细归类时按知识点几乎搜不到：用知识点名和别名（再加上调用方给的关键词）做关键词检索补足
+            if (point && found.length < want) {
+              const seen = new Set(found.map((q) => q.id));
+              const words = [point.name.replace(/（.*?）/g, ""), ...point.aliases, input.query || ""].filter(Boolean).join(" ");
+              found = [...found, ...bank.search(words, { ...input, subject: point.subject, extraTopics, limit: Math.min(20, want * 2) }).filter((q) => !seen.has(q.id))];
+            }
+            if (!found.length) return textResult(`题库里没有找到和「${point?.name || input.query}」相关的${input.source === "真题" || input.source === "习题" ? input.source : "题目"}。`, { hits: [] });
             // 标上做没做过：本会话用过的排最后，以前做对过的其次，没做过 / 做错过的优先（各组内保持相关度顺序）
             const { map } = progress.events();
             const mine = usedInChat.get(context.chatId) || new Set();
@@ -521,17 +562,18 @@ exports.activate = (ctx) => {
               const last = ev[ev.length - 1];
               const inChat = mine.has(q.id) || (!!context.chatId && ev.some((e) => e.chatId === context.chatId));
               const tag = inChat ? "本会话用过" : ev.length ? `做过${ev.length}次·上次${last.correct === true ? "对" : last.correct === false ? "错" : "未判"}` : "没做过";
-              return { q, tag: `难度${score.qDiff(q)} | ${tag}`, rank: inChat ? 2 : last?.correct === true ? 1 : 0 };
+              const keyOk = !!q.answer && (!bank.CHOICE_TYPES.includes(q.type) || bank.choiceAnswer(q));
+              return { q, tag: `难度${score.qDiff(q)} | ${tag}`, keyOk, rank: (inChat ? 4 : 0) + (keyOk ? 0 : 2) + (last?.correct === true ? 1 : 0) };
             };
             const hits = found.map(info).map((x, i) => ({ ...x, i })).sort((a, b) => a.rank - b.rank || a.i - b.i).slice(0, want);
-            const lines = hits.map(({ q, tag }) => `- id=${q.id} | ${q.paper || "（无出处）"} 第${q.number}题 | ${q.type} ${q.score || ""}分 | ${tag} | 考点：${q.topics.join("、") || "—"}${q.source === "AI生成" ? " | AI生成" : q.source === "习题" ? " | 习题" : " | 真题"}\n  ${q.stem.replace(/\s+/g, " ").slice(0, 160)}`);
+            const lines = hits.map(({ q, tag, keyOk }) => `- id=${q.id} | ${q.paper || "（无出处）"} 第${q.number}题 | ${q.type} ${q.score || ""}分 | ${tag} | ${knowledgeSummary(q, frame.knowledge.get(q.id))} | ${keyOk ? `答案来源：${q.answerSource || "题库"}` : "答案待核"}${q.source === "AI生成" ? " | AI生成" : q.source === "习题" ? " | 习题" : " | 真题"}\n  ${q.stem.replace(/\s+/g, " ").slice(0, 160)}`);
             return textResult(`找到 ${hits.length} 道（没做过、做错过的排在前面；「本会话用过」的不要再出；答案用 kaoyan_bank_get 取，不要提前告诉学习者）：\n${lines.join("\n")}`, { ids: hits.map((h) => h.q.id) });
           },
         },
         {
           name: "kaoyan_bank_get",
-          label: "读取真题",
-          description: "按 id 读取一道真题的完整内容：题干、选项、答案、解析、阅读材料。答案和解析只供你判断和讲评，学习者作答前不要透露。",
+          label: "读取题库题目",
+          description: "按 id 读取题库原题的题干、选项、答案、解析和材料。作答前不透露答案；答案待核的题请先独立核对、换题或改编。",
           parameters: { type: "object", properties: { id: { type: "string", minLength: 1, maxLength: 100 } }, required: ["id"], additionalProperties: false },
           execute: async (_id, input, signal) => {
             guard(signal);
@@ -542,13 +584,19 @@ exports.activate = (ctx) => {
             const material = q.material || (q.materialKey ? bank.materialsOf()[q.materialKey] : "") || "";
             const text = [
               `出处：${q.source === "习题" ? "习题·" : ""}${q.paper || "（无）"} 第${q.number}题（${q.type}${q.source === "习题" ? "" : `，${q.score || "?"} 分`}）${q.source === "AI生成" ? "，AI 生成" : ""}`,
+              knowledgeSummary(q, score.frame().knowledge.get(q.id)),
+              q.answer && bank.CHOICE_TYPES.includes(q.type) && !bank.choiceAnswer(q) ? "答案待核：题库答案无法对应选项，不能据此判分。" : "",
               material ? `阅读材料：\n${material}` : "",
               `题干：\n${q.stem}`,
               q.options.length ? `选项：\n${q.options.map((o) => `(${o.key}) ${o.text}`).join("\n")}` : "",
-              q.hasFigure ? "（原题有图，题干里是图的文字描述）" : "",
+              q.hasFigure ? "（原题有图。题图随结果附上时，出题不得省略作答所需数据。）" : "",
               `【仅供你参考，学习者作答前不要透露】\n答案${q.answerSource === "AI" ? "（AI 解答，非官方，可能有误）" : ""}：${q.answer || "（题库里没有）"}\n解析${q.analysisSource === "AI" ? "（AI 按标准答案补写，非官方）" : ""}：${q.analysis || "（题库里没有）"}`,
             ].filter(Boolean).join("\n\n");
-            return textResult(text, { id: q.id });
+            const result = textResult(text, { id: q.id });
+            for (const id of (q.figures?.length ? q.figures : q.hasFigure ? q.images || [] : []).slice(0, 4)) {
+              try { result.content.push({ type: "image", data: images.get(id), mimeType: "image/jpeg" }); } catch { /* 老题图片可能已丢失 */ }
+            }
+            return result;
           },
         },
       );
@@ -568,18 +616,20 @@ exports.activate = (ctx) => {
         execute: async (_id, input, signal) => {
           guard(signal);
           const r = score.focus(input);
-          return textResult(r.text, { leaves: r.leaves.map((l) => l.id) });
+          return textResult(r.text, { leaves: r.leaves.map((l) => l.id), pending: r.pending });
         },
       });
       tools.push({
         name: "kaoyan_bank_record",
-        label: "记录真题作答",
-        description: "用题库真题（kaoyan_bank_get 取到的题）出的检查题 / 练习题，学习者作答并判定后立即调用一次：把这道真题记为已做，题库「完成情况」里会显示。只用于题库里的真题，自己出的题或改编题不要调用。",
+        label: "记录题库题作答",
+        description: "学习者完成题库原题（真题或习题）后记录。填实际检验的 pointIds，且用 hinted 区分独立和提示后答对。自编或改编题用记录做题或错题工具。",
         parameters: {
           type: "object",
           properties: {
-            id: { type: "string", minLength: 1, maxLength: 100, description: "真题 id（kaoyan_bank_search / kaoyan_bank_get 里的 id）" },
+            id: { type: "string", minLength: 1, maxLength: 100, description: "题库题目 id（kaoyan_bank_search / kaoyan_bank_get 里的 id）" },
             correct: { type: "boolean", description: "学习者这次是否做对（部分对算 false，并给 score）" },
+            pointIds: pointIdsSchema,
+            hinted: { type: "boolean", description: "是否在关键步骤获得过提示" },
             score: { type: "number", minimum: 0, maximum: 100, description: "可选：按这道题满分给的得分，主观题部分得分时填" },
             learnerAnswer: { type: "string", maxLength: 2000, description: "学习者的作答（简短）" },
             difficulty: { type: "integer", minimum: 1, maximum: 5, description: "可选：这次实际考的难度档（只截取原题一步、或给了提示时会比原题低）。难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴。不填按题库里的难度" },
@@ -589,11 +639,15 @@ exports.activate = (ctx) => {
         },
         execute: async (_id, input, signal) => {
           guard(signal);
+          const question = score.frame().qMap.get(input.id);
+          if (!question) return textResult("题库里没有这个 id，没有记录。", {});
+          input = { ...input, pointIds: validPointIds(input.pointIds, question.subject) };
           let impact = null;
           let r;
           try { ({ result: r, impact } = score.measure(() => progress.record({ ...input, agent: context.agent, chatId: context.chatId }))); }
           catch { r = progress.record({ ...input, agent: context.agent, chatId: context.chatId }); }
-          if (!r) return textResult("题库里没有这个 id，没有记录。只有题库真题才需要记录。", {});
+          const bankStatus = input.correct ? (input.hinted ? "提示后做对" : "独立做对") : input.score > 0 ? "部分做对" : "答错待复测";
+          coverage.record({ subject: question.subject, pointIds: input.pointIds, status: bankStatus, question: `${question.paper} 第${question.number}题`, chatId: context.chatId, bankId: question.id });
           score.queueRate([input.id]);
           changed("score");
           return textResult(`已记录：${r.q.paper} 第${r.q.number}题 ${input.correct ? "做对" : "做错"}。${impact ? impactText(impact) : ""}${input.correct ? "" : "如果还没记错题，用 kaoyan_log_mistake（带上 bankId）记进错题本。"}`, { id: r.entry.id });
@@ -607,6 +661,7 @@ exports.activate = (ctx) => {
           type: "object",
           properties: {
             subject: { type: "string", enum: ["数学", "408", "英语", "政治"] },
+            pointIds: pointIdsSchema,
             topic: { type: "string", minLength: 1, maxLength: 200, description: "这道题考的具体考点，如「等价无穷小替换」「二叉树的遍历」" },
             question: { type: "string", maxLength: 600, description: "题目摘要（一两句，可含 LaTeX）" },
             difficulty: { type: "integer", minimum: 1, maximum: 5, description: "难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴" },
@@ -633,6 +688,7 @@ exports.activate = (ctx) => {
           type: "object",
           properties: {
             subject: { type: "string", enum: ["数学", "408", "英语", "政治"] },
+            pointIds: pointIdsSchema,
             topic: { type: "string", minLength: 1, maxLength: 200, description: "所属知识点" },
             question: { type: "string", minLength: 1, maxLength: 8000, description: "题干原文（可含 LaTeX），照抄出题时的完整题干，不要删改" },
             options: {
@@ -650,7 +706,7 @@ exports.activate = (ctx) => {
             correctAnswer: { type: "string", maxLength: 8000, description: "正确答案与关键步骤" },
             errorType: { type: "string", enum: ERROR_TYPES },
             diagnosis: { type: "string", minLength: 1, maxLength: 2000, description: "错在哪、为什么错" },
-            bankId: { type: "string", maxLength: 100, description: "这道题来自题库真题时填真题 id" },
+            bankId: { type: "string", maxLength: 100, description: "题库原题（真题或习题）填题目 id" },
             difficulty: { type: "integer", minimum: 1, maximum: 5, description: "难度档 1–5（考研视角）：1 基础=直接套定义或公式；2 简单=常规变形两三步；3 中档=考研选择 / 填空常见难度；4 较难=真题解答题、综合两三个点；5 压轴" },
           },
           required: ["subject", "topic", "question", "learnerAnswer", "errorType", "diagnosis", "difficulty"],
@@ -667,8 +723,53 @@ exports.activate = (ctx) => {
             return textResult(`英语题不进错题本，只给对应考点的星记了一次做错（难度 ${input.difficulty || "?"}）。现在按「答错之后」讲清楚，再换题检查。`, {});
           }
           const m = addMistake({ ...input, options, optionsChecked: true, bankId: input.bankId && bank.all().some((q) => q.id === input.bankId) ? input.bankId : null, source: { practice: "练习会话", prober: "测底" }[context.agent] || "教学会话", chatId: context.chatId });
+          if (!m.bankId) coverage.record({ subject: m.subject, pointIds: m.pointIds, status: "答错待复测", question: m.question, chatId: context.chatId });
           changed("score");
           return textResult(`已记进错题本（${m.errorType}：${m.topic}），对应考点的星记了一次做错（难度 ${m.difficulty || "?"}）。现在按「答错之后」讲清楚，再换题检查。`, { id: m.id });
+        },
+      });
+      tools.push({
+        name: "kaoyan_coverage",
+        label: "查考纲知识点覆盖",
+        description: "查数一或408某章的知识点、编号和实测状态。规划时与考频表同查；本轮未测的继续留在清单。题库检索或作答记录可以引用编号。",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string", minLength: 1, maxLength: 200 }, subject: { type: "string", enum: ["数学", "408"] } },
+          required: ["query"],
+          additionalProperties: false,
+        },
+        execute: async (_id, input, signal) => {
+          guard(signal);
+          const result = score.focus(input);
+          if (!result.coverage?.length) return textResult("没查到对应的数一或408知识点，请用具体章节名。", { points: [] });
+          const rows = result.coverage;
+          const count = (st) => rows.filter((p) => p.status === st).length;
+          const lines = [`考纲知识点清单（共 ${rows.length} 项：独立做对 ${count("独立做对")}，提示后/部分做对 ${count("提示后做对") + count("部分做对")}，答错待复测 ${count("答错待复测")}，已讲待测 ${count("已讲待测")}，未测 ${count("未测")}）`,
+            "格式：知识点 · 状态 · 近15年真题直接考查题数（只算已细归类的题） · 标记 · 编号。「延伸」= 大纲没单列、常考的方法；「待核」= 只有第三方整理稿列出，低优先级。"];
+          let leaf = "";
+          for (const p of rows) {
+            if (p.leaf !== leaf) { leaf = p.leaf; lines.push(`## ${leaf.split("/").slice(-2).join(" · ")}`); }
+            const tags = [p.extension && !p.pending ? "延伸" : "", p.pending ? "待核" : ""].filter(Boolean).join("·");
+            lines.push(`- ${p.name} · ${p.status}${p.tests > 1 ? `（测过${p.tests}次）` : ""} · ${p.recent}题${tags ? ` · ${tags}` : ""} · ${p.id}`);
+          }
+          if (result.pending) lines.push("", `注意：这些科目还有 ${result.pending} 道近 15 年真题没做细归类，题数偏少，不能据「0题」判定不考。`);
+          return textResult(lines.join("\n"), { points: rows });
+        },
+      }, {
+        name: "kaoyan_mark_taught",
+        label: "记录已讲待测",
+        description: "只标记已完成讲解、还没作答的知识点。答题结果用对应的逐题作答工具。",
+        parameters: {
+          type: "object",
+          properties: { subject: { type: "string", enum: ["数学", "408"] }, pointIds: pointIdsSchema },
+          required: ["subject", "pointIds"],
+          additionalProperties: false,
+        },
+        execute: async (_id, input, signal) => {
+          guard(signal);
+          const n = coverage.record({ ...input, status: "已讲待测", chatId: context.chatId });
+          if (n) changed("score");
+          return textResult(n ? `已记录 ${n} 个已讲知识点。` : "没有找到有效的知识点编号。", { n });
         },
       });
       if (context.agent === "prober") return tools;
@@ -830,6 +931,7 @@ exports.activate = (ctx) => {
     if (p.studyMode !== undefined) patch.studyMode = !!p.studyMode;
     if (p.autoExportPrompt !== undefined) patch.autoExportPrompt = !!p.autoExportPrompt;
     if (p.ocrModel !== undefined) patch.ocrModel = p.ocrModel && p.ocrModel.provider && p.ocrModel.id ? { provider: str(p.ocrModel.provider, 200), id: str(p.ocrModel.id, 300) } : null;
+    if (p.classifyModel !== undefined) patch.classifyModel = p.classifyModel && p.classifyModel.provider && p.classifyModel.id ? { provider: str(p.classifyModel.provider, 200), id: str(p.classifyModel.id, 300) } : null;
     if (p.importConcurrency !== undefined) patch.importConcurrency = Math.max(1, Math.min(12, Number(p.importConcurrency) || 6));
     if (p.momoToken !== undefined) patch.momoToken = str(p.momoToken, 500).trim();
     if (p.vocabTarget !== undefined) patch.vocabTarget = Math.max(1000, Math.min(20000, Math.round(Number(p.vocabTarget) || 5500)));
@@ -851,13 +953,26 @@ exports.activate = (ctx) => {
   });
   op("score.unsettled", () => ({ sessions: score.unsettled() }));
   op("score.focus", (p) => score.focus(p));
+  op("score.coverage", (p) => score.coverageList(Array.isArray(p.leaves) ? p.leaves.slice(0, 50) : [str(p.leaf, 500)]));
   op("score.questions", (p) => score.questionsOf(str(p.leaf, 500), Math.max(1, Math.min(40, Number(p.limit) || 10))));
   op("score.settle", (p) => jobs.start("settle", "结算本次学习", async (j) => {
     const r = await score.settle({ chatId: str(p.chatId, 200), by: "button", ...j });
     changed("score");
     return r;
   }));
-  op("score.classify", (p) => jobs.start("classify", "AI 归类真题考点", async (j) => { const r = await score.classifyBank({ ...j, force: !!p.force }); changed("score"); return r; }));
+  // 题目细归类：一次只跑一个任务；暂停 = 取消任务（已归的每批都存了，下次从没归的接着来）
+  let classifyJob = null;
+  const classifyRunning = () => { const j = classifyJob && jobs.get(classifyJob); return j && j.status === "running" ? j : null; };
+  op("score.classifyStatus", () => ({ ...score.classifyStatus(), running: classifyRunning(), model: settings().classifyModel || null }));
+  op("score.classify", async () => {
+    let running = classifyRunning();
+    for (let i = 0; i < 120 && running?.cancelling; i++) { await new Promise((r) => setTimeout(r, 500)); running = classifyRunning(); }
+    if (running) return running;
+    const job = jobs.start("classify", "题目知识点归类", async (j) => { try { return await score.classifyBank(j); } finally { changed("score"); } });
+    classifyJob = job.id;
+    return job;
+  });
+  op("score.classifyPause", () => { const j = classifyRunning(); return j ? jobs.cancel(j.id) : { ok: false }; });
   op("score.rate", (p) => jobs.start("rate", "AI 评定题目难度", async (j) => { const r = await score.rateBank({ ...j, force: !!p.force }); changed("score"); return r; }));
   op("momo.sync", () => jobs.start("momo", "同步墨墨背单词", async () => {
     const r = await refreshMomo(true);
@@ -1012,14 +1127,25 @@ exports.activate = (ctx) => {
     let items = bank.all();
     if (p.subject) items = items.filter((q) => q.subject === p.subject);
     if (p.paper) items = items.filter((q) => q.paper === p.paper);
-    if (p.q) items = items.filter((q) => `${q.stem} ${q.topics.join(" ")}`.includes(p.q));
+    if (p.source === "真题") items = items.filter((q) => !["习题", "AI生成"].includes(q.source));
+    if (p.source === "习题") items = items.filter((q) => q.source === "习题");
+    const frame = p.q || p.knowledge ? score.frame() : null;
+    if (p.q) items = items.filter((q) => `${q.stem} ${q.topics.join(" ")} ${knowledgeSummary(q, frame.knowledge.get(q.id))}`.toLowerCase().includes(String(p.q).toLowerCase()));
+    if (p.knowledge) items = items.map((q) => ({ ...q, knowledge: knowledgeSummary(q, frame.knowledge.get(q.id)) }));
     return { total: items.length, items: items.slice(0, Number(p.limit) || 200), papers: bank.papers() };
   });
   op("bank.papers", () => bank.papers());
   op("bank.update", (p) => {
     const allowed = ["stem", "answer", "analysis", "topics", "type", "score", "number", "options"];
     const patch = Object.fromEntries(Object.entries(p.patch || {}).filter(([k]) => allowed.includes(k)));
-    return store.update("bank", p.id, (q) => ({ ...patch, ...(patch.analysis !== undefined && patch.analysis !== q.analysis ? { analysisSource: "手动" } : {}), ...(patch.answer !== undefined && patch.answer !== q.answer ? { answerSource: "手动" } : {}) }));
+    const updated = store.update("bank", p.id, (q) => {
+      const next = { ...q, ...patch };
+      if (next.answer && bank.CHOICE_TYPES.includes(next.type) && !bank.choiceAnswer(next)) fail("答案无法对应现有选项，请填写正确的选项字母");
+      return { ...patch, ...(patch.analysis !== undefined && patch.analysis !== q.analysis ? { analysisSource: "手动" } : {}), ...(patch.answer !== undefined && patch.answer !== q.answer ? { answerSource: "手动" } : {}) };
+    });
+    score.invalidateFrame();
+    changed("score");
+    return updated;
   });
   op("bank.delete", (p) => { store.remove("bank", p.id); return { ok: true }; });
   op("bank.missingAnalysis", () => bank.missingAnalysis());
@@ -1046,9 +1172,20 @@ exports.activate = (ctx) => {
     const meta = { subject: p.subject, paper: str(p.paper, 200).trim(), year: p.year, kind: p.kind, source: p.source || "真题" };
     if (!bank.SUBJECTS.includes(meta.subject)) fail("请选择科目");
     const label = `导入 ${meta.paper || meta.subject}`;
-    if (p.format === "text") return jobs.start("import", label, (j) => bank.importText({ meta, text: str(p.text, 2_000_000), ...j }));
-    if (p.format === "images") return jobs.start("import", label, (j) => bank.importImages({ meta, imgs: (p.images || []).map((d) => ({ data: d, mimeType: "image/jpeg" })), ...j }));
-    if (p.format === "pdf") return jobs.start("import", label, (j) => bank.importPdf({ meta, pdfBase64: p.pdf, first: Number(p.first) || 1, last: Number(p.last) || 999, ...j }));
+    const run = (options, importer) => jobs.start("import", label, async (j) => {
+      const result = await importer({ meta, ...options, ...j });
+      score.invalidateFrame();
+      if (meta.kind !== "answers") {
+        const ids = bank.all().filter((q) => q.subject === meta.subject && q.paper === meta.paper).map((q) => q.id);
+        score.queueClassify(ids);
+        score.queueRate(ids);
+      }
+      changed("bank");
+      return result;
+    });
+    if (p.format === "text") return run({ text: str(p.text, 2_000_000) }, bank.importText);
+    if (p.format === "images") return run({ imgs: (p.images || []).map((d) => ({ data: d, mimeType: "image/jpeg" })) }, bank.importImages);
+    if (p.format === "pdf") return run({ pdfBase64: p.pdf, first: Number(p.first) || 1, last: Number(p.last) || 999 }, bank.importPdf);
     fail("未知的导入格式");
   });
 
@@ -1103,7 +1240,7 @@ exports.activate = (ctx) => {
     const job = jobs.start("batch", "批量导入题目", (j) => bank.importManifest({
       folder, ...j,
       // 每导完一份题目文件：后台把新题归到考点，没评上难度的也补评
-      onFileDone: ({ ids }) => { score.queueClassify(ids); score.queueRate(ids); },
+      onFileDone: ({ ids }) => { score.invalidateFrame(); score.queueClassify(ids); score.queueRate(ids); changed("bank"); },
       readProgress,
       saveProgress: saveProgressMerged,
     }));

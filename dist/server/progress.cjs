@@ -6,7 +6,7 @@ const SOURCE_BY_MODE = { quick: "快练", section: "专项", full: "模考", eng
 
 function createProgress({ store, bank }) {
   /** 会话里用真题出的题，学习者作答后由智能体调用记录。 */
-  function record({ id, correct, score, learnerAnswer, agent, chatId, difficulty }) {
+  function record({ id, correct, score, learnerAnswer, agent, chatId, difficulty, pointIds, hinted }) {
     const q = bank.all().find((x) => x.id === id);
     if (!q) return null;
     const max = Number(q.score) || null;
@@ -19,6 +19,7 @@ function createProgress({ store, bank }) {
       source: agent === "practice" ? "练习会话" : "教学会话",
       chatId: chatId || null,
       answer: str(learnerAnswer, 2000),
+      ...(pointIds?.length ? { pointIds, hinted: !!hinted } : {}),
       difficulty: Number.isInteger(difficulty) && difficulty >= 1 && difficulty <= 5 ? difficulty : null,
     };
     const list = store.list("bankLog");
@@ -39,7 +40,7 @@ function createProgress({ store, bank }) {
         add(qid, { at: a.finishedAt, correct: r.correct ?? null, score: r.score ?? null, max: r.max ?? null, source: SOURCE_BY_MODE[a.mode] || "练习" });
       }
     }
-    for (const e of store.list("bankLog")) add(e.qid, { at: e.at, correct: e.correct, score: e.score, max: e.max, source: e.source, chatId: e.chatId, difficulty: e.difficulty || null });
+    for (const e of store.list("bankLog")) add(e.qid, { at: e.at, correct: e.correct, score: e.score, max: e.max, source: e.source, chatId: e.chatId, difficulty: e.difficulty || null, pointIds: e.pointIds, hinted: e.hinted });
     const open = new Set();
     for (const m of store.list("mistakes")) {
       if (!m.bankId) continue;

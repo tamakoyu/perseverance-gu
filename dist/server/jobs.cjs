@@ -31,7 +31,7 @@ function createJobs(ctx) {
     start,
     get: (id) => { const j = jobs.get(id); return j ? publicJob(j) : null; },
     list: () => [...jobs.values()].map(publicJob).reverse().slice(0, 20),
-    cancel: (id) => { const j = jobs.get(id); if (j) { j.abort.abort(); j.message = "正在暂停（等手上的页识别完）…"; emit(j); } return { ok: !!j }; },
+    cancel: (id) => { const j = jobs.get(id); if (j) { j.abort.abort(); j.message = j.kind === "classify" ? "正在暂停…" : "正在暂停（等手上的页识别完）…"; emit(j); } return { ok: !!j }; },
   };
 }
 

@@ -55,6 +55,15 @@ function scrub(text) {
 function normalizeChoice(s) {
   return String(s || "").toUpperCase().replace(/[^A-G]/g, "").split("").sort().join("");
 }
+// 只接受选项字母及常见的标点写法，避免把 LaTeX 命令中的字母当答案。
+function choiceAnswer(q, answer = q.answer) {
+  const raw = String(answer || "").trim().toUpperCase().replace(/^答案\s*[:：]\s*/, "");
+  if (!/^[A-G\s,，、/()（）.。．]+$/.test(raw)) return "";
+  const keys = normalizeChoice(raw);
+  const options = new Set(q.options.map((o) => o.key));
+  if (!keys || [...keys].some((k) => !options.has(k)) || new Set(keys).size !== keys.length) return "";
+  return q.type === "多选" || keys.length === 1 ? keys : "";
+}
 function normalizeText(s) {
   return String(s || "").replace(/\$|\\,|\\!|\\left|\\right|\s/g, "").replace(/，/g, ",").toLowerCase();
 }
@@ -140,34 +149,50 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     return { questions: out, answers, materials };
   }
 
-  /** book：习题书的答案册覆盖整本书、题号全书唯一时，按「书 + 题号」对答案，不限于某一章。 */
-  function applyAnswers(paper, answers, book = null) {
-    if (!answers.length) return 0;
+  function applyAnswers(meta, answers, wholeBook = false) {
     const items = all();
-    let n = 0;
+    const candidates = items.filter((q) => q.subject === meta.subject && (!meta.book || q.book === meta.book) &&
+      (wholeBook ? q.source === "习题" : q.paper === meta.paper));
+    const issues = [];
+    let answered = 0;
     for (const a of answers) {
-      const q = items.find((x) => (book ? x.source === "习题" && x.book === book : x.paper === paper) && normNo(x.number) === normNo(a.number));
-      if (q) { if (a.answer) { q.answer = scrub(a.answer); q.answerSource = "官方"; } if (a.analysis) { q.analysis = scrub(a.analysis); q.analysisSource = "官方"; } n++; }
+      const matches = candidates.filter((q) => normNo(q.number) === normNo(a.number));
+      if (matches.length !== 1) {
+        issues.push(`第${a.number}题：${matches.length ? "题号不唯一，请按章节导入答案" : "没有匹配的题目"}`);
+        continue;
+      }
+      const q = matches[0];
+      const answer = scrub(a.answer);
+      const analysis = scrub(a.analysis);
+      const invalid = answer && CHOICE_TYPES.includes(q.type) && !choiceAnswer(q, answer);
+      if (invalid) issues.push(`第${a.number}题：答案无法对应选项，请核对`);
+      if (answer && !invalid) { q.answer = answer; q.answerSource = "官方"; }
+      if (analysis && !invalid) { q.analysis = analysis; q.analysisSource = "官方"; }
+      if ((answer || analysis) && !invalid) answered++;
     }
-    store.saveList("bank", items);
-    return n;
+    if (answered) store.saveList("bank", items);
+    return { answered, issues };
   }
 
   function commit(meta, merged) {
     if (meta.kind === "answers") {
-      // 解析文件里重述的题目只取答案和解析，不新增题目
       const answers = [...merged.answers, ...merged.questions.filter((q) => q.answer || q.analysis).map((q) => ({ number: q.number, answer: q.answer, analysis: q.analysis }))];
-      return { added: 0, updated: 0, answered: applyAnswers(meta.paper, answers, meta.answerScope === "book" ? meta.book : null), total: 0 };
+      return { added: 0, updated: 0, total: 0, ...applyAnswers(meta, answers, meta.answerScope === "book" && !!meta.book) };
     }
     const items = all();
     // 同一试卷同题号已存在则更新，避免重复导入
     let added = 0;
     let updated = 0;
     const rated = {};
+    const issues = [];
     for (const q of merged.questions) {
+      if (q.answer && CHOICE_TYPES.includes(q.type) && !choiceAnswer(q)) {
+        issues.push(`第${q.number}题：答案无法对应选项，请核对`);
+        q.answer = "";
+      }
       const d = q._d;
       delete q._d;
-      const old = meta.paper && q.number ? items.find((x) => x.paper === meta.paper && x.number === q.number && x.type === q.type) : null;
+      const old = meta.paper && q.number ? items.find((x) => x.subject === q.subject && x.paper === q.paper && (x.book || "") === (q.book || "") && x.number === q.number && x.type === q.type) : null;
       if (old) {
         // 重导题目文件时不能把已合并的答案 / 解析 / 裁好的插图冲掉（答案常常来自单独的解析文件）
         const keep = {};
@@ -186,8 +211,16 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
       const cur = store.value("difficulty", { map: {}, at: null });
       store.saveValue("difficulty", { ...cur, map: { ...(cur.map || {}), ...rated } });
     }
-    const answered = applyAnswers(meta.paper, merged.answers);
-    return { added, updated, answered, total: merged.questions.length };
+    const applied = applyAnswers(meta, merged.answers);
+    if (meta.subject === "408" && meta.source === "真题" && meta.year) {
+      const paper = items.filter((q) => q.subject === meta.subject && q.paper === meta.paper);
+      const numbers = new Set(paper.map((q) => q.number));
+      const missing = Array.from({ length: 47 }, (_, i) => String(i + 1)).filter((n) => !numbers.has(n));
+      const totalScore = paper.reduce((sum, q) => sum + (Number(q.score) || 0), 0);
+      if (missing.length) issues.push(`套卷缺题：${missing.join("、")}`);
+      if (paper.length !== 47 || totalScore !== 150) issues.push(`套卷有 ${paper.length} 题，合计 ${totalScore} 分（应为 47 题、150 分）`);
+    }
+    return { added, updated, answered: applied.answered, issues: [...issues, ...applied.issues], total: merged.questions.length };
   }
 
   /** 按页标记切段（每段约 size 字，相邻段重叠一页左右），保证跨页的题至少在一段里完整出现。 */
@@ -340,7 +373,8 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
           await Promise.all([...inflight].filter(([k]) => k.startsWith(`${it.book}\u0000`)).map(([, p]) => p.catch(() => {})));
           if (!all().some((q) => q.source === "习题" && q.book === it.book)) fail("这本书的题目还没导入，等题目导完再合并答案");
         } else {
-          if (it.kind === "answers" && inflight.has(it.paper)) await inflight.get(it.paper).catch(() => {});
+          const key = it.category === "习题" && it.book ? `${it.book}\u0000${it.paper}` : it.paper;
+          if (it.kind === "answers" && inflight.has(key)) await inflight.get(key).catch(() => {});
           if (it.kind === "answers" && !all().some((q) => q.paper === it.paper)) fail("这套试卷的题目还没导入，等题目导完再合并答案");
         }
         const buf = fs.readFileSync(path.join(folder, it.file));
@@ -355,7 +389,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
           const r = await importImages({ meta, imgs, signal, progress: (d, t, m) => progress(finishedCount, items.length, `${label}：${m}`) });
           summary.files++; summary.added += r.added; summary.updated += r.updated; summary.answered += r.answered;
           if (it.kind !== "answers") { try { onFileDone({ paper: it.paper, ids: all().filter((q) => q.paper === it.paper).map((q) => q.id) }); } catch { /* 后台归类失败不影响导入 */ } }
-          const hard = (r.pageErrors || []).filter((e) => !e.includes("截断"));
+          const hard = [...(r.pageErrors || []).filter((e) => !e.includes("截断")), ...(r.issues || [])];
           if (hard.length) partial = `部分页失败（已保存其余页）：${hard.join("；")}`;
         } finally {
           fs.rmSync(dir, { recursive: true, force: true });
@@ -388,9 +422,8 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
         const it = todo[next++];
         const p = runOne(it);
         const key = it.category === "习题" && it.book ? `${it.book}\u0000${it.paper}` : it.paper;
-        if (it.kind !== "answers") { inflight.set(it.paper, p); if (key !== it.paper) inflight.set(key, p); }
+        if (it.kind !== "answers") inflight.set(key, p);
         await p;
-        if (inflight.get(it.paper) === p) inflight.delete(it.paper);
         if (inflight.get(key) === p) inflight.delete(key);
       }
     };
@@ -415,7 +448,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
 
   // ── 组卷 ─────────────────────────────────────────────
   /** 关键词检索真题（题干、考点、选项、解析），按相关度排序。 */
-  function search(query, { subject, type, yearFrom, yearTo, limit = 8 } = {}) {
+  function search(query, { subject, type, source, yearFrom, yearTo, limit = 8, matchPoint, extraTopics } = {}) {
     const q = String(query || "").toLowerCase().trim();
     const parts = q.split(/[\s,，、;；]+/).filter(Boolean);
     const terms = new Set(parts);
@@ -424,9 +457,11 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     for (const it of all()) {
       if (subject && it.subject !== subject) continue;
       if (type && it.type !== type) continue;
+      if (source && source !== "全部" && (source === "真题" ? ["习题", "AI生成"].includes(it.source) : it.source !== source)) continue;
+      if (matchPoint && !matchPoint(it)) continue;
       if (yearFrom && (it.year || 0) < yearFrom) continue;
       if (yearTo && (it.year || 9999) > yearTo) continue;
-      const topics = it.topics.join(" ").toLowerCase();
+      const topics = [it.topics.join(" "), extraTopics?.(it) || ""].join(" ").toLowerCase();
       const stem = it.stem.toLowerCase();
       const rest = `${it.options.map((o) => o.text).join(" ")} ${it.analysis}`.toLowerCase();
       let score = terms.size ? 0 : 1;
@@ -516,7 +551,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     if (norm.length !== new Set(norm).size) w.push("有两个选项内容相同，可能识别错了");
     if (["单选", "多选"].includes(q.type) && norm.length && norm.length !== 4) w.push(`选项只有 ${norm.length} 个`);
     if (["单选", "多选"].includes(q.type) && !norm.length) w.push("选择题没有识别出选项");
-    if (q.answer && ["单选"].includes(q.type) && !/^[A-D]$/.test(q.answer.trim())) w.push("单选题答案不是一个字母");
+    if (q.answer && CHOICE_TYPES.includes(q.type) && !choiceAnswer(q)) w.push("答案无法对应现有选项");
     if (Object.keys(mathFields(q)).length) w.push("有公式没有用 $ 包起来，显示会是源码");
     return w;
   }
@@ -870,10 +905,12 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     const max = q.score || 1;
     const given = ans || {};
     if (CHOICE_TYPES.includes(q.type) && q.options.length) {
-      if (!q.answer) return { correct: null, score: 0, max, feedback: "题库里没有这题的答案，无法判分" };
-      const ok = normalizeChoice(given.choice) === normalizeChoice(q.answer);
+      const expected = choiceAnswer(q);
+      if (!expected) return { correct: null, score: 0, max, feedback: "题库答案缺失或无法对应选项，待核对" };
+      const actual = choiceAnswer(q, given.choice);
+      const ok = actual === expected;
       let score = ok ? max : 0;
-      if (!ok && q.type === "多选" && given.choice && normalizeChoice(given.choice).split("").every((c) => normalizeChoice(q.answer).includes(c))) score = max / 2;
+      if (!ok && q.type === "多选" && actual && [...actual].every((c) => expected.includes(c))) score = max / 2;
       return { correct: ok, score, max, feedback: ok ? "" : `正确答案：${q.answer}` };
     }
     const hasImages = Array.isArray(given.images) && given.images.length;
@@ -914,7 +951,7 @@ function createBank({ store, llm, pdf, images, getSettings = () => ({}), getPape
     return out;
   }
 
-  return { figureModel, normBox, all, transcribe, search, fixMath, warnings, problems, fillAnalyses, missingAnalysis, cropFigures, missingFigures, pictures, papers, select, generate, forExam, materialsOf, importText, importImages, importPdf, importManifest, gradeOne, diagnose, CHOICE_TYPES, READING_ERRORS, GENERAL_ERRORS, SUBJECTS };
+  return { figureModel, normBox, choiceAnswer, all, transcribe, search, fixMath, warnings, problems, fillAnalyses, missingAnalysis, cropFigures, missingFigures, pictures, papers, select, generate, forExam, materialsOf, importText, importImages, importPdf, importManifest, gradeOne, diagnose, CHOICE_TYPES, READING_ERRORS, GENERAL_ERRORS, SUBJECTS };
 }
 
 module.exports = { createBank };

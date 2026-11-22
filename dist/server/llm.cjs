@@ -44,7 +44,7 @@ function createLlm(ctx, getSettings) {
   async function resolveExact(spec) {
     const catalog = await ctx.inference.catalog();
     const entry = (catalog.models || []).find((m) => m.provider === spec.provider && m.id === spec.id);
-    if (!entry) fail(`模型 ${spec.provider}/${spec.id} 当前不可用，请在考研工具箱设置里重新选择 OCR 模型`);
+    if (!entry) fail(`模型 ${spec.provider}/${spec.id} 当前不可用，请重新选择模型（考研工具箱里选的 OCR / 归类模型）`);
     return { provider: spec.provider, id: spec.id };
   }
 
@@ -130,7 +130,13 @@ function createLlm(ctx, getSettings) {
     let lastErr;
     let text = opts.text;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const raw = await complete({ ...opts, system, text, allowThinking: true });
+      const { text: raw, stopReason } = await complete({ ...opts, system, text, allowThinking: true, withMeta: true });
+      // 输出被上限截断：原样重试多半还是截断。调用方能拆小批次时（splitOnTruncate）直接报错，让它拆开重来
+      if (opts.splitOnTruncate && /length|max.?tokens/i.test(String(stopReason || ""))) {
+        const err = new Error("输出超过上限被截断");
+        err.truncated = true;
+        throw err;
+      }
       try { return parseJson(raw); } catch (err) {
         lastErr = err;
         text = `${opts.text}\n\n（上一次输出有问题：${err.message}。请重新只输出合法、完整的 JSON；如果页面内容太多，analysis 可以写得更简短。）`;

@@ -3,6 +3,7 @@
 // 模块分值按考试大纲（数学一 高数约 60%、线代约 20%、概率约 20%；408 数据结构 45、组成原理 45、操作系统 35、计网 25；
 // 英语一按题型；政治按 2026 大纲各课程比例），模块内各考点的分值按题库历年真题实际考到的分数统计（近年权重更高）。
 const { SYLLABUS } = require("./syllabus.cjs");
+const { questionKnowledge, weights } = require("./question-knowledge.cjs");
 
 const MODULE_MAX = {
   数学: { 高等数学: 90, 线性代数: 30, 概率论与数理统计: 30 },
@@ -312,12 +313,16 @@ function keywordMatcher(frame, corpus = []) {
 }
 
 /** 用题库历年真题统计各考点分值。aiMap：{qid:[leafId…]}（AI 精确归类结果，优先）。 */
-function buildFrame(bankItems, aiMap = {}) {
+function buildFrame(bankItems, aiMap = {}, pointMap = {}) {
   const frame = baseFrame();
   const matcher = keywordMatcher(frame, bankItems.filter((q) => ["数学", "408"].includes(q.subject)));
+  const knowledge = new Map(bankItems.map((q) => [q.id, questionKnowledge(q, pointMap)]));
+  const leavesById = new Set(frame.flatMap((s) => s.modules.flatMap((m) => m.chapters.flatMap((c) => c.leaves.map((l) => l.id)))));
   const mapQ = (q) => {
-    const ai = aiMap[q.id];
-    if (Array.isArray(ai) && ai.length) return ai.map((id) => ({ id, w: 1 / ai.length }));
+    const tested = knowledge.get(q.id)?.tested;
+    if (tested?.length) return weights(tested);
+    const ai = Array.isArray(aiMap[q.id]) ? [...new Set(aiMap[q.id])].filter((id) => leavesById.has(id) && id.startsWith(`${q.subject}/`)) : [];
+    if (ai.length) return ai.map((id) => ({ id, w: 1 / ai.length }));
     return matcher.question(q);
   };
   const raw = new Map();
@@ -355,7 +360,7 @@ function buildFrame(bankItems, aiMap = {}) {
       });
     }
   }
-  return { frame, matcher, mapQ, stats: { total, mapped } };
+  return { frame, matcher, mapQ, knowledge, stats: { total, mapped } };
 }
 
 module.exports = { buildFrame, baseFrame, keywordMatcher };
