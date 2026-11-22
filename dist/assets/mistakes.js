@@ -57,6 +57,14 @@ export function mountMistakes(ctx, container, signal) {
     return opts;
   }
 
+  // 选项文本框：每行一个「A. 内容」
+  const optionsText = (opts) => (opts || []).map((o) => `${o.key}. ${stripKey(o.text)}`).join("\n");
+  const parseOptions = (text) => String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((l, i) => {
+    const k = l.match(/^\s*[(（]?([A-Ga-g])[)）.．、:：]\s*/);
+    return { key: k ? k[1].toUpperCase() : String.fromCharCode(65 + i), text: k ? l.slice(k[0].length) : l };
+  });
+  const optionsPlaceholder = "选择题每行一个选项，如：A. 能，1 仍是它的周期（不是选择题就留空）";
+
   // 错因 / 作答里也有 LaTeX，统一按 Markdown 渲染
   const reasonBlock = (m) => md(ctx, `**${m.errorType || "其他"}**：${m.diagnosis || "—"}`, signal);
   const answerBlock = (label, text) => (text ? el("div", "ky-muted", el("span", null, `${label}：`), md(ctx, text, signal, "ky-md ky-inline")) : null);
@@ -164,7 +172,7 @@ export function mountMistakes(ctx, container, signal) {
 
   function editDialog(m) {
     const f = {
-      options: el("textarea", { class: "ky-input ky-ta", placeholder: "选择题每行一个选项，如：A. 能，1 仍是它的周期（不是选择题就留空）" }, (m.options || []).map((o) => `${o.key}. ${stripKey(o.text)}`).join("\n")),
+      options: el("textarea", { class: "ky-input ky-ta", placeholder: optionsPlaceholder }, optionsText(m.options)),
       topic: el("input", { class: "ky-input", value: m.topic }),
       errorType: el("input", { class: "ky-input", value: m.errorType, list: "ky-errtypes" }),
       question: el("textarea", { class: "ky-input ky-ta" }, m.question),
@@ -179,10 +187,7 @@ export function mountMistakes(ctx, container, signal) {
         el("datalist", { id: "ky-errtypes" }, ...errorTypes.map((t) => el("option", { value: t }))),
         field("科目", subj), field("考点", f.topic), field("错因", f.errorType), field("题目", f.question), field("选项", f.options), field("正确答案", f.correctAnswer), field("诊断", f.diagnosis),
         el("div", "ky-row", btn("保存", async () => {
-          const options = f.options.value.split("\n").map((l) => l.trim()).filter(Boolean).map((l, i) => {
-            const k = l.match(/^\s*[(（]?([A-Ga-g])[)）.．、:：]\s*/);
-            return { key: k ? k[1].toUpperCase() : String.fromCharCode(65 + i), text: k ? l.slice(k[0].length) : l };
-          });
+          const options = parseOptions(f.options.value);
           await ctx.call("mistakes.update", { id: m.id, patch: { options, subject: subj.value, topic: f.topic.value, errorType: f.errorType.value, question: f.question.value, correctAnswer: f.correctAnswer.value, diagnosis: f.diagnosis.value } });
           handle.dispose();
           load();
@@ -266,7 +271,8 @@ export function mountMistakes(ctx, container, signal) {
     const subj = select(SUBJECTS.filter((s) => s !== "英语"), it.subject || "数学", () => {}); // 英语题不进错题本
     const f = {
       topic: el("input", { class: "ky-input", value: it.topic || "", placeholder: "考点，如：反常积分" }),
-      question: el("textarea", { class: "ky-input ky-ta", placeholder: "题目（支持 Markdown / LaTeX）" }, it.question || ""),
+      question: el("textarea", { class: "ky-input ky-ta", placeholder: "题干（支持 Markdown / LaTeX；选择题的选项填在下面）" }, it.question || ""),
+      options: el("textarea", { class: "ky-input", placeholder: optionsPlaceholder }, optionsText(it.options)),
       learnerAnswer: el("textarea", { class: "ky-input", placeholder: "我当时的作答 / 思路" }, it.learnerAnswer || ""),
       correctAnswer: el("textarea", { class: "ky-input ky-ta", placeholder: "正确答案与关键步骤" }, it.correctAnswer || ""),
       errorType: el("input", { class: "ky-input", list: "ky-errtypes2", value: it.errorType || "", placeholder: "错因类型" }),
@@ -278,13 +284,13 @@ export function mountMistakes(ctx, container, signal) {
     const form = el("div", "ky-draft",
       el("datalist", { id: "ky-errtypes2" }, ...errorTypes.map((t) => el("option", { value: t }))),
       el("div", "ky-grid2", field("科目", subj), field("考点", f.topic)),
-      field("题目", f.question), field("我的作答", f.learnerAnswer), field("正确答案", f.correctAnswer),
+      field("题目", f.question), field("选项", f.options), field("我的作答", f.learnerAnswer), field("正确答案", f.correctAnswer),
       el("div", "ky-grid2", field("错因", f.errorType), field("诊断", f.diagnosis)),
       shots.length ? el("label", "ky-check", keepPhotos, " 保存原始照片") : extra.node,
       el("div", "ky-row",
         btn("AI 分析错因", async () => {
           try {
-            const r = await runJob(ctx, msg, () => ctx.call("mistakes.diagnose", { question: f.question.value, learnerAnswer: f.learnerAnswer.value, correctAnswer: f.correctAnswer.value, images: shots.length ? shots : extra.get() }), "分析");
+            const r = await runJob(ctx, msg, () => ctx.call("mistakes.diagnose", { question: [f.question.value, f.options.value].filter((x) => x.trim()).join("\n"), learnerAnswer: f.learnerAnswer.value, correctAnswer: f.correctAnswer.value, images: shots.length ? shots : extra.get() }), "分析");
             f.errorType.value = r.errorType || f.errorType.value;
             f.diagnosis.value = r.diagnosis || f.diagnosis.value;
             if (!f.correctAnswer.value && r.correctAnswer) f.correctAnswer.value = r.correctAnswer;
@@ -295,7 +301,7 @@ export function mountMistakes(ctx, container, signal) {
             const imgs = shots.length ? (keepPhotos.checked ? shots : []) : extra.get();
             const ids = [];
             for (const d of imgs) ids.push((await ctx.call("image.save", { data: d })).id);
-            await ctx.call("mistakes.add", { subject: subj.value, topic: f.topic.value, source: it.source, question: f.question.value, learnerAnswer: f.learnerAnswer.value, correctAnswer: f.correctAnswer.value, errorType: f.errorType.value, diagnosis: f.diagnosis.value, images: ids });
+            await ctx.call("mistakes.add", { subject: subj.value, topic: f.topic.value, source: it.source, question: f.question.value, options: parseOptions(f.options.value), learnerAnswer: f.learnerAnswer.value, correctAnswer: f.correctAnswer.value, errorType: f.errorType.value, diagnosis: f.diagnosis.value, images: ids });
             reset(form, el("p", "ky-ok", `✓ 已保存：${f.topic.value || "错题"}`));
             data = await ctx.call("mistakes.list");
           } catch (err) { reset(msg, errorBox(err)); }

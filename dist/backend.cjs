@@ -293,15 +293,15 @@ exports.activate = (ctx) => {
   // 会话里用宿主选择题工具（quiz / probe）出的题，记错题时模型常常只抄（甚至改写）题干、不抄选项：
   // 在会话里找回原选项（字母沿用出题时的 value，和模型讲解里的「选 C」一致）。
   // 打分 = 题干相似度 + 学习者当时选的选项文字出现在「作答」里 + 是记错题之前最近一道答错的选择题
-  function sessionOptions(chatId, question, learnerAnswer) {
-    if (!chatId || !question) return [];
+  function sessionQuiz(chatId, question, learnerAnswer) {
+    if (!chatId || !question) return null;
     let record = null;
     try { record = ctx.learning.getSession(chatId); } catch { /* 会话读不到就算了 */ }
-    if (!record) return [];
+    if (!record) return null;
     const norm = (t) => String(t || "").replace(/\\[a-zA-Z]+|[\s$\\{}()（）"“”'‘’，。、：:；;？?！!,.\-]/g, "");
     const grams = (t) => { const s = new Set(); for (let i = 0; i < t.length - 1; i++) s.add(t.slice(i, i + 2)); return s; };
     const target = grams(norm(question));
-    if (target.size < 4) return [];
+    if (target.size < 4) return null;
     const said = norm(learnerAnswer);
     const msgs = record.messages || [];
     // 选择题调用 + 学习者的作答结果
@@ -332,20 +332,44 @@ exports.activate = (ctx) => {
       const picked = (x.res?.answers || []).map((y) => norm(y.label)).filter((y) => y.length >= 2);
       if (said && picked.length && picked.every((y) => said.includes(y))) s += 0.4;
       if (x === lastWrong) s += 0.25;
-      if (s >= 0.6 && (!best || s >= best.s)) best = { s, options: x.a.options };
+      if (s >= 0.6 && (!best || s >= best.s)) best = { s, a: x.a };
     }
-    return best ? normOptions(best.options) : [];
+    if (!best) return null;
+    const original = typeof best.a.question === "string" ? best.a.question.trim() : "";
+    return { options: normOptions(best.a.options), question: original };
   }
 
-  // 旧错题补选项：每道只查一次（optionsChecked 记下来）
+  // 题干里抄进来的选项（「…是：A. xx B. yy」或分行的 A./B.）去掉：选项已经单独存了
+  function stripInlineOptions(question, options) {
+    const q = String(question || "");
+    if (!options?.length) return q;
+    const mark = (k) => new RegExp(`(^|[\\s：:。？?；;，,])[(（]?${k}[)）.．、:：]`, "m");
+    const a = q.match(mark("A"));
+    if (!a) return q;
+    const cut = a.index + a[1].length;
+    // 至少前三个选项字母（不足三个就全部）都按顺序出现，才认定是抄进来的选项
+    let rest = q.slice(cut + 2);
+    for (const k of ["B", "C", "D"].slice(0, Math.min(options.length, 3) - 1)) {
+      const hit = rest.match(mark(k));
+      if (!hit) return q;
+      rest = rest.slice(hit.index + hit[0].length);
+    }
+    return q.slice(0, cut).replace(/[\s；;，,]+$/, "").trim() || q;
+  }
+
+  // 旧错题：补选项（optionsChecked），并把题干换回出题时的原文、去掉题干里的选项（stemChecked）；每道只做一次
   function backfillOptions() {
     const items = store.list("mistakes");
     let touched = 0;
     for (const m of items) {
-      if (m.optionsChecked || m.options?.length || !m.chatId) continue;
-      const opts = sessionOptions(m.chatId, m.question, m.learnerAnswer);
-      if (opts.length) m.options = opts;
-      m.optionsChecked = true;
+      if (m.optionsChecked && m.stemChecked) continue;
+      const hit = m.chatId ? sessionQuiz(m.chatId, m.question, m.learnerAnswer) : null;
+      if (hit && !m.options?.length) m.options = hit.options;
+      if (!m.stemChecked) {
+        if (hit?.question) m.question = hit.question;
+        else if (!m.bankId) m.question = stripInlineOptions(m.question, m.options);
+      }
+      m.optionsChecked = m.stemChecked = true;
       touched++;
     }
     if (touched) { store.saveList("mistakes", items); changed("mistakes"); }
@@ -360,6 +384,7 @@ exports.activate = (ctx) => {
       question: str(input.question, 20000),
       options: normOptions(input.options),
       optionsChecked: !!input.optionsChecked,
+      stemChecked: !!input.optionsChecked,
       learnerAnswer: str(input.learnerAnswer, 8000),
       correctAnswer: str(input.correctAnswer, 20000),
       errorType: str(input.errorType, 50) || "其他",
@@ -633,7 +658,10 @@ exports.activate = (ctx) => {
         },
         execute: async (_id, input, signal) => {
           guard(signal);
-          const options = input.options?.length ? input.options : sessionOptions(context.chatId, input.question, input.learnerAnswer);
+          // 会话里能找到这道选择题时，题干和选项都用出题时的原文（模型记错题时常改写题干、把选项抄进题干）
+          const hit = sessionQuiz(context.chatId, input.question, input.learnerAnswer);
+          const options = input.options?.length ? input.options : hit?.options || [];
+          input = { ...input, question: hit?.question || stripInlineOptions(input.question, normOptions(options)) };
           if (input.subject === "英语") {
             addMistake({ ...input, source: { practice: "练习会话", prober: "测底" }[context.agent] || "教学会话", chatId: context.chatId });
             return textResult(`英语题不进错题本，只给对应考点的星记了一次做错（难度 ${input.difficulty || "?"}）。现在按「答错之后」讲清楚，再换题检查。`, {});
@@ -909,7 +937,7 @@ exports.activate = (ctx) => {
     // 手动录入的英语题直接拒绝（不要像会话里那样记一次做错）
     const subject = ["数学", "408", "英语", "政治"].includes(p.subject) ? p.subject : stats.classify(`${p.topic} ${p.question}`);
     if (subject === "英语") fail("英语题不进错题本");
-    return addMistake({ ...p, subject });
+    return addMistake({ ...p, subject, question: stripInlineOptions(p.question, normOptions(p.options)) });
   });
   op("mistakes.update", (p) => {
     const allowed = ["subject", "topic", "question", "learnerAnswer", "correctAnswer", "errorType", "diagnosis", "archived", "source", "options"];
@@ -965,7 +993,7 @@ exports.activate = (ctx) => {
     const imgs = (p.images || []).map((d) => ({ data: d, mimeType: "image/jpeg" }));
     if (!imgs.length) fail("请先选择照片");
     const res = await llm.json({
-      system: `你在帮考研学生录入纸质书上做错的题。识别照片里的题目（可能多道），公式用 LaTeX。输出 JSON：{"items":[{"subject":"数学|408|英语|政治","topic":"考点","question":"完整题目 Markdown（含选项）","correctAnswer":"照片里能看到的答案/解析，没有就留空","learnerAnswer":"照片里学生的手写作答，没有就留空"}]}`,
+      system: `你在帮考研学生录入纸质书上做错的题。识别照片里的题目（可能多道），公式用 LaTeX。输出 JSON：{"items":[{"subject":"数学|408|英语|政治","topic":"考点","question":"题干 Markdown（不含选项）","options":[{"key":"A","text":"选项内容（不带字母）"}],"correctAnswer":"照片里能看到的答案/解析，没有就留空","learnerAnswer":"照片里学生的手写作答，没有就留空"}]}。选择题的选项只放在 options 里，不要写进 question；不是选择题 options 给 []。`,
       text: `书名/来源：${str(p.source, 200) || "未说明"}。${str(p.hint, 500)}`,
       images: imgs,
       maxTokens: 8000,
