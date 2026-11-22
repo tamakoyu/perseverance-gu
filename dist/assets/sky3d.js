@@ -23,6 +23,7 @@ const KIND_LABEL = { taught: "讲解", practice: "练习", real: "真题", vocab
 const TIER_NAMES = ["", "基础", "简单", "中档", "较难", "压轴"];
 const SEEN_KEY = "kaoyan.sky3d.seen";
 const MODS_KEY = "kaoyan.sky3d.mods";
+const SOLID_KEY = "kaoyan.sky3d.solid";
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const f1 = (x) => (Math.round((x || 0) * 10) / 10).toFixed(1);
@@ -95,10 +96,11 @@ function layout(data) {
 }
 
 export function mountScore(ctx, container, signal) {
-  const root = el("div", "sk");
-  const canvas = el("canvas", "sk-canvas");
+  const root = el("div", "sk sk-intro");
+  if (jget(SOLID_KEY)) root.classList.add("sk-solid");
+  const canvas = el("canvas", { class: "sk-canvas", tabindex: "0", "aria-label": "拾星星图：← → 切换同层，Enter 进入，Backspace 或 Esc 返回" });
   const labels = el("div", "sk-labels");
-  const scoreBox = el("div", "sk-score");
+  const scoreBox = el("div");
   const crumbs = el("nav", "sk-crumbs");
   const tools = el("div", "sk-tools");
   const dock = el("div", "sk-dock");
@@ -110,7 +112,10 @@ export function mountScore(ctx, container, signal) {
   const sheet = el("div", "sk-sheet");
   const banner = el("div", "sk-banner");
   const veil = el("div", "sk-veil", el("div", "sk-veil-txt", "拾 星"));
-  put(root, canvas, labels, el("div", "sk-top", scoreBox, crumbs, tools), dock, feed, hint, tip, banner, panel, pop, sheet, veil);
+  const live = el("div", { class: "sk-sr", "aria-live": "polite" });
+  const reticle = el("div", "sk-reticle");
+  put(labels, reticle);
+  put(root, canvas, labels, el("div", "sk-top", el("div", "sk-topleft", el("div", "sk-score", scoreBox), crumbs, hint), tools), dock, feed, tip, banner, panel, pop, sheet, veil, live);
   put(container, root);
 
   let renderer;
@@ -174,6 +179,7 @@ export function mountScore(ctx, container, signal) {
   // ── 镜头 ───────────────────────────────────────────
   const ctl = { target: V(0, 0, 0), r: 7800, theta: 0.5, phi: 0.9, vt: 0, vp: 0, min: 1200, max: 5000, idle: 0 };
   let fly = null;
+  const curLook = V(0, 0, 0); // 飞行中镜头正看着的点（打断时从这里接着走）
   const nav = { level: 0, subject: null, chapter: null, star: null };
   function camFromCtl() {
     const sp = Math.sin(ctl.phi);
@@ -225,19 +231,30 @@ export function mountScore(ctx, container, signal) {
     const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
     const c1 = from.clone().addScaledVector(fwd, len * 0.28).add(V(0, len * 0.08, 0));
     const c2 = to.clone().addScaledVector(dir, len * 0.45);
-    const dur = ms ?? clamp(1000 + Math.sqrt(len) * 26, 1200, 2600);
-    fly = { from, c1, c2, to, lookFrom: ctl.target.clone(), lookTo: v.target.clone(), t0: performance.now(), ms: reduceMotion() ? 1 : dur, v };
+    const dur = ms ?? clamp(520 + Math.sqrt(len) * 14, 700, 1400);
+    fly = { from, c1, c2, to, lookFrom: (fly ? curLook : ctl.target).clone(), lookTo: v.target.clone(), t0: performance.now(), ms: reduceMotion() ? 1 : dur, v };
     ctl.vt = ctl.vp = 0;
   }
   function stepFly(now) {
     const p = clamp((now - fly.t0) / fly.ms, 0, 1);
     const e = ease(p), k = 1 - e;
     camera.position.set(0, 0, 0).addScaledVector(fly.from, k * k * k).addScaledVector(fly.c1, 3 * k * k * e).addScaledVector(fly.c2, 3 * k * e * e).addScaledVector(fly.to, e * e * e);
-    camera.lookAt(fly.lookFrom.clone().lerp(fly.lookTo, ease(clamp(p * 1.25, 0, 1))));
-    camera.fov = 50 + 9 * Math.sin(Math.PI * p);
+    curLook.copy(fly.lookFrom).lerp(fly.lookTo, ease(clamp(p * 1.25, 0, 1)));
+    camera.lookAt(curLook);
+    camera.fov = 50 + 6 * Math.sin(Math.PI * p);
     camera.updateProjectionMatrix();
-    bloom.strength = 0.7 + 0.22 * Math.sin(Math.PI * p);
-    if (p >= 1) { ctlFromCam(fly.lookTo); ctl.min = fly.v.min; ctl.max = fly.v.max; camera.fov = 50; camera.updateProjectionMatrix(); fly = null; }
+    bloom.strength = 0.7 + 0.15 * Math.sin(Math.PI * p);
+    if (p >= 1) { ctlFromCam(fly.lookTo); ctl.min = fly.v.min; ctl.max = fly.v.max; camera.fov = 50; camera.updateProjectionMatrix(); bloom.strength = 0.7; fly = null; }
+  }
+  /** 用户拖动 / 滚轮 / 点击时立刻停在当前位置，把镜头交还给手动控制。 */
+  function stopFly() {
+    if (!fly) return false;
+    const v = fly.v;
+    ctlFromCam(curLook);
+    ctl.min = Math.min(v.min, ctl.r); ctl.max = Math.max(v.max, ctl.r);
+    camera.fov = 50; camera.updateProjectionMatrix(); bloom.strength = 0.7;
+    fly = null;
+    return true;
   }
 
   // ── 导航 ───────────────────────────────────────────
@@ -249,7 +266,7 @@ export function mountScore(ctx, container, signal) {
     if (level < 2) nav.chapter = null;
     if (level < 1) nav.subject = null;
     nav.level = level;
-    tip.classList.remove("sk-on"); hoverObj = null;
+    hideTip(); hoverObj = null;
     if (level === 0) closePanel();
     else if (level === 1) showSubject(nav.subject);
     else if (level === 2) showChapter(nav.chapter);
@@ -258,6 +275,14 @@ export function mountScore(ctx, container, signal) {
     closePlanets(); // 特写不再画环绕的真题小球：做题直接给这颗星加分
     renderCrumbs(); renderHint();
     root.dataset.level = String(level);
+    for (const c of dock.children) c.classList.toggle("sk-on", c.dataset.key === nav.subject);
+    live.textContent = describe();
+  }
+  function describe() {
+    if (nav.star) { const l = nav.star.leaf; return `${l.name}，${f1(l.score)} / ${f1(l.points)} 分`; }
+    if (nav.chapter) return `${nav.chapter.name}，${f1(nav.chapter.c.score)} / ${f1(nav.chapter.c.max)} 分，${nav.chapter.stars.length} 个考点`;
+    if (nav.subject) { const so = L.subjects.find((x) => x.key === nav.subject); return `${so.short}，${f1(so.sub.score)} / ${so.sub.max} 分`; }
+    return data ? `全景，预计 ${f1(data.total)} / 500 分` : "全景";
   }
   const up = () => { if (nav.level > 0) go(nav.level - 1); };
   function renderCrumbs() {
@@ -270,7 +295,7 @@ export function mountScore(ctx, container, signal) {
       el("button", { type: "button", class: `sk-crumb${i === parts.length - 1 ? " sk-on" : ""}`, onclick: fn || undefined }, label)]));
   }
   function renderHint() {
-    reset(hint, ["拖动旋转 · 滚轮远近 · 点一颗星或一条旋臂飞进去", "点一个星座进入 · 点空白处返回", "点一颗星看特写 · 点空白处返回", nav.star?.leaf.vocab ? "这一档的单词在右边 · 点空白处返回" : "星越亮掌握越好 · 右边是难度阶梯和加分记录 · 点空白处返回"][nav.level]);
+    reset(hint, ["拖动旋转，滚轮缩放；点星或旋臂进入", "点一个星座进入；← → 换科目，Esc 返回", "点一颗星看特写；← → 换章节，Esc 返回", nav.star?.leaf.vocab ? "这一档的单词在右边；Esc 返回" : "星越亮掌握越好；← → 换考点，Esc 返回"][nav.level]);
   }
 
   // ── 旧版特写里环绕的真题小球（已停用，保留清理逻辑） ──
@@ -394,13 +419,24 @@ export function mountScore(ctx, container, signal) {
     e._used = true;
     return e;
   }
-  function place(e, p, alpha, dy = 0, force = false) {
+  /** below：星在屏幕上的半径，给了就把标签放到星的正下方（不压在星体上）。 */
+  function place(e, p, alpha, dy = 0, force = false, below = null) {
     const v = p.clone().project(camera);
     if (v.z > 1 || alpha <= 0.01) { e.style.opacity = "0"; return; }
-    const x = (v.x * 0.5 + 0.5) * cw, y = (-v.y * 0.5 + 0.5) * ch + dy;
     const w = (e._w ||= Math.max(30, e.offsetWidth || 60)), h = (e._h ||= Math.max(14, e.offsetHeight || 24));
-    const r = [x - w / 2 - 6, y - h / 2 - 3, x + w / 2 + 6, y + h / 2 + 3];
-    if (!force && (rects.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]) || x < -40 || x > cw + 40 || y < -20 || y > ch + 20)) { e.style.opacity = "0"; return; }
+    const sx = (v.x * 0.5 + 0.5) * cw, sy = (-v.y * 0.5 + 0.5) * ch;
+    // 依次试：星的下方、上方、右边、左边，挑第一个不挡别的星和标签的位置
+    // 偏移要大过标签框的内边距（上下 3、左右 6），否则会撞上自己那颗星的障碍框
+    const offs = below != null ? [[0, below + 8 + h / 2], [0, -(below + 8 + h / 2)], [below + 12 + w / 2, 0], [-(below + 12 + w / 2), 0]] : [[0, dy]];
+    const hits = (r) => rects.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
+    let x, y, r;
+    for (const [ox, oy] of offs) {
+      x = sx + ox; y = sy + oy; r = [x - w / 2 - 6, y - h / 2 - 3, x + w / 2 + 6, y + h / 2 + 3];
+      if (!hits(r)) break;
+      r = null;
+    }
+    if (!r && force) { x = sx + offs[0][0]; y = sy + offs[0][1]; r = [x - w / 2 - 6, y - h / 2 - 3, x + w / 2 + 6, y + h / 2 + 3]; }
+    if (!r || (!force && (x < -40 || x > cw + 40 || y < -20 || y > ch + 20))) { e.style.opacity = "0"; return; }
     rects.push(r);
     e.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
     e.style.opacity = String(alpha);
@@ -417,31 +453,44 @@ export function mountScore(ctx, container, signal) {
       if (lv === 1 && so.key === nav.subject) continue;
       const on = hv.subject === so.key;
       const e = label(`s:${so.key}`, "sk-label-subj", on ? full(so.short, `${f1(so.sub.score)} / ${so.sub.max}`) : only(so.short));
-      place(e, so.chapters[Math.floor(so.chapters.length * 0.72)].center.clone().add(V(0, 70, 0)), on ? 1 : lv === 0 ? 0.42 : 0.18, 0, on);
+      place(e, so.chapters[Math.floor(so.chapters.length * 0.72)].center.clone().add(V(0, 70, 0)), on ? 1 : lv === 0 ? 0.62 : 0.3, 0, on);
     }
     if (lv === 1 || lv === 2) {
       const so = L.subjects.find((x) => x.key === nav.subject);
+      // 科目层只常驻分值最高的 6 个章节名；章节层不显示别的章节，悬停才出
+      const top = new Set(so.chapters.slice().sort((a, b) => b.c.max - a.c.max).slice(0, lv === 1 ? 6 : 0));
       for (const cs of so.chapters.slice().sort((a, b) => (hv.chapter === b ? 1 : 0) - (hv.chapter === a ? 1 : 0) || b.c.max - a.c.max)) {
         if (lv === 2 && nav.chapter === cs) continue;
         const on = hv.chapter === cs;
+        if (!on && !top.has(cs)) continue;
         const e = label(`c:${cs.key}`, "sk-label-ch", on ? full(cs.name, `${f1(cs.c.score)} / ${f1(cs.c.max)}`) : only(cs.name));
-        place(e, cs.center, on ? 1 : lv === 1 ? 0.3 : 0.14, 22, on);
+        place(e, cs.center, on ? 1 : 0.55, 22, on);
       }
     }
     if (lv === 2 || lv === 3) {
-      for (const st of nav.chapter.stars.slice().sort((a, b) => (hv.star === b ? 1 : 0) - (hv.star === a ? 1 : 0) || b.leaf.points - a.leaf.points)) {
+      // 先把这个星座里每颗星占的屏幕区域记为障碍，标签就不会压在星上
+      for (const st of nav.chapter.stars) {
+        if (!st.obj) continue;
+        const v = st.pos.clone().project(camera);
+        if (v.z > 1) continue;
+        const x = (v.x * 0.5 + 0.5) * cw, y = (-v.y * 0.5 + 0.5) * ch, rr = Math.min(120, st.obj.screenRadius(camera) + 2);
+        rects.push([x - rr, y - rr, x + rr, y + rr]);
+      }
+      const sorted = nav.chapter.stars.slice().sort((a, b) => b.leaf.points - a.leaf.points);
+      const top = new Set(sorted.slice(0, lv === 2 ? 8 : 4));
+      for (const st of sorted.sort((a, b) => (hv.star === b ? 1 : 0) - (hv.star === a ? 1 : 0))) {
         if (lv === 3 && st === nav.star) continue;
         const l = st.leaf;
         const on = hv.star === st;
-        const nm = l.name;
-        const e = label(`l:${st.id}`, "sk-label-leaf", on ? full(nm, `${f1(l.score)} / ${f1(l.points)}`) : only(nm));
-        place(e, st.pos, on ? 1 : lv === 2 ? 0.34 : 0.12, 24, on);
+        if (!on && !top.has(st)) continue;
+        const e = label(`l:${st.id}`, "sk-label-leaf", on ? full(l.name, `${f1(l.score)} / ${f1(l.points)}`) : only(l.name));
+        place(e, st.pos, on ? 1 : lv === 2 ? 0.62 : 0.3, 0, on, st.obj ? st.obj.screenRadius(camera) : 8);
       }
     }
     if (lv < 2 && hv.star) {
       const l = hv.star.leaf;
-      const e = label(`l:${hv.star.id}`, "sk-label-leaf", full(l.name, `${hv.star.chapter.name} · ${f1(l.score)} / ${f1(l.points)}`));
-      place(e, hv.star.pos, 1, 24, true);
+      const e = label(`l:${hv.star.id}`, "sk-label-leaf", full(l.name, `${hv.star.chapter.name}  ${f1(l.score)} / ${f1(l.points)}`));
+      place(e, hv.star.pos, 1, 0, true, hv.star.obj ? hv.star.obj.screenRadius(camera) : 8);
     }
     if (lv === 3 && planetSys) for (const it of planetSys.items) {
       if (hv.planet !== it.q) continue;
@@ -450,6 +499,18 @@ export function mountScore(ctx, container, signal) {
       place(e, wp, 1, 18, true);
     }
     for (const [k, e] of labelEls) if (!e._used) { e.remove(); labelEls.delete(k); }
+    const aim = (hoverObj?.star) || (lv === 3 ? nav.star : null);
+    if (aim?.obj && !preview) {
+      const v = aim.pos.clone().project(camera);
+      if (v.z <= 1) {
+        const size = Math.round(Math.max(24, Math.min(220, aim.obj.screenRadius(camera) * 2 + 16)));
+        const x = (v.x * 0.5 + 0.5) * cw - size / 2, y = (-v.y * 0.5 + 0.5) * ch - size / 2;
+        reticle.style.width = reticle.style.height = `${size}px`;
+        reticle.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+        reticle.classList.add("sk-on");
+        reticle.classList.toggle("sk-dim", aim !== hoverObj?.star);
+      } else reticle.classList.remove("sk-on");
+    } else reticle.classList.remove("sk-on");
   }
 
   // ── 拾取与交互 ───────────────────────────────────────
@@ -480,7 +541,7 @@ export function mountScore(ctx, container, signal) {
     }
     const cand = L.stars.filter((st) => (st.obj ? st.obj.dim > 0.15 : true) && !(lv === 3 && st === nav.star));
     const vocabR = () => Math.max(18, 30 / ((2 * camera.position.distanceTo(L.stars.find((q) => q.leaf.vocab)?.pos || V(0, 0, 0)) * Math.tan((camera.fov * Math.PI) / 360)) / ch));
-    const st = nearest(x, y, cand, (q, v) => v.copy(q.pos), (q) => (q.obj ? q.obj.screenRadius(camera) + 12 : vocabR()));
+    const st = nearest(x, y, cand, (q, v) => v.copy(q.pos), (q) => (q.obj ? Math.max(16, q.obj.screenRadius(camera) + 10) : vocabR()));
     if (st) return { star: st };
     if (lv >= 1) {
       if (lv === 1) { const so = L.subjects.find((x) => x.key === nav.subject); const hs = first(so.chapters.flatMap((c) => c.stars.map((s) => s.hit))); if (hs) return { chapter: hs.star.chapter }; }
@@ -505,13 +566,17 @@ export function mountScore(ctx, container, signal) {
     else if (h?.star) { const l = h.star.leaf; body = [el("b", null, l.name), el("span", null, `${f1(l.score)} / ${f1(l.points)} 分${l.vocab ? "" : ` · 掌握 ${pct(l.m)}${l.last ? ` · 记忆 ${pct(l.R)}` : ""}`}`), l.due ? el("em", null, "该复习了") : null]; }
     else if (h?.chapter) body = [el("b", null, h.chapter.name), el("span", null, `${f1(h.chapter.c.score)} / ${f1(h.chapter.c.max)} 分 · ${h.chapter.stars.length} 个考点`)];
     else if (h?.subject) { const s = data.subjects.find((x) => x.key === h.subject); body = [el("b", null, SUBJ[h.subject].short), el("span", null, `${f1(s.score)} / ${s.max} 分`)]; }
-    if (!body) { tip.classList.remove("sk-on"); return; }
+    if (!body) { hideTip(); return; }
     reset(tip, ...body);
     tip.style.transform = `translate(${Math.min(cw - 240, x + 18)}px, ${Math.min(ch - 70, y + 18)}px)`;
-    tip.classList.add("sk-on");
+    if (tip.classList.contains("sk-on") || tipTimer) return;
+    tipTimer = setTimeout(() => { tipTimer = null; if (hoverObj && !drag) tip.classList.add("sk-on"); }, 120);
   }
+  let tipTimer = null;
+  function hideTip() { clearTimeout(tipTimer); tipTimer = null; tip.classList.remove("sk-on"); }
   let drag = null;
-  canvas.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, moved: 0 }; canvas.setPointerCapture(e.pointerId); ctl.idle = 0; closePop(); });
+  // 飞行中按下鼠标：先停在原地（拖动接管镜头；点到星就从这里改飞过去）
+  canvas.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, moved: 0, stopped: stopFly() }; canvas.setPointerCapture(e.pointerId); ctl.idle = 0; closePop(); });
   let mouse = null, hoverTick = 0;
   function refreshHover(x, y) {
     const h = pick(x, y);
@@ -526,9 +591,9 @@ export function mountScore(ctx, container, signal) {
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       drag.moved += Math.abs(dx) + Math.abs(dy); drag.x = e.clientX; drag.y = e.clientY;
-      if (!fly) { ctl.vt -= dx * 0.0007; ctl.vp -= dy * 0.0007; }
+      ctl.vt -= dx * 0.0007; ctl.vp -= dy * 0.0007;
       ctl.idle = 0;
-      if (drag.moved > 5) { tip.classList.remove("sk-on"); canvas.style.cursor = "grabbing"; return; }
+      if (drag.moved > 5) { hideTip(); canvas.style.cursor = "grabbing"; return; }
     }
     const h = pick(e.clientX - r.left, e.clientY - r.top);
     hoverObj = h;
@@ -540,17 +605,51 @@ export function mountScore(ctx, container, signal) {
     const r = canvas.getBoundingClientRect();
     const was = drag; drag = null;
     canvas.style.cursor = "grab";
-    if (was && was.moved < 6 && !fly) onClickPick(pick(e.clientX - r.left, e.clientY - r.top));
+    if (!was || was.moved >= 6) return;
+    const h = pick(e.clientX - r.left, e.clientY - r.top);
+    if (h || !was.stopped) onClickPick(h); // 点空白只是为了停下飞行时，不返回上一层
   });
-  canvas.addEventListener("pointerleave", () => { tip.classList.remove("sk-on"); hoverObj = null; mouse = null; for (const st of L?.stars || []) if (st.obj) st.obj.hover = 0; });
-  canvas.addEventListener("wheel", (e) => { e.preventDefault(); if (fly) return; ctl.r = clamp(ctl.r * Math.exp(e.deltaY * 0.0012), ctl.min, ctl.max); ctl.idle = 0; }, { passive: false });
+  canvas.addEventListener("pointerleave", () => { hideTip(); hoverObj = null; mouse = null; for (const st of L?.stars || []) if (st.obj) st.obj.hover = 0; });
+  canvas.addEventListener("wheel", (e) => { e.preventDefault(); stopFly(); ctl.r = clamp(ctl.r * Math.exp(e.deltaY * 0.0012), ctl.min, ctl.max); ctl.idle = 0; }, { passive: false });
   const onKey = (e) => {
-    if (e.key !== "Escape" || e.defaultPrevented) return;
-    if (sheet.classList.contains("sk-on")) closeSheet();
-    else if (pop.classList.contains("sk-on")) closePop();
-    else if (preview) stopPreview();
-    else up();
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t?.closest?.("input, textarea, select, [contenteditable]")) return;
+    if (e.key === "Escape") {
+      if (sheet.classList.contains("sk-on")) closeSheet();
+      else if (pop.classList.contains("sk-on")) closePop();
+      else if (preview) stopPreview();
+      else up();
+      return;
+    }
+    // 方向键 / Enter / Backspace 只在焦点在星图上（或没有焦点）时生效，不抢面板和宿主里的按键
+    if (!(t === canvas || t === document.body || t === document.documentElement)) return;
+    if (!L || preview || sheet.classList.contains("sk-on")) return;
+    const k = e.key;
+    if (k === "ArrowLeft" || k === "ArrowRight") step(k === "ArrowRight" ? 1 : -1);
+    else if (k === "Enter" || k === "ArrowDown") enter();
+    else if (k === "Backspace" || k === "ArrowUp") up();
+    else return;
+    e.preventDefault();
   };
+  const cycle = (list, cur, d) => list[(list.indexOf(cur) + d + list.length) % list.length];
+  const starsOf = (cs) => cs.stars.slice().sort((a, b) => b.leaf.points - a.leaf.points);
+  /** ← →：同一层里换到相邻的科目 / 章节 / 考点。 */
+  function step(d) {
+    const lv = nav.level;
+    if (lv === 0) { go(1, { subject: (d > 0 ? L.subjects[0] : L.subjects[L.subjects.length - 1]).key }); return; }
+    if (lv === 1) { go(1, { subject: cycle(L.subjects.map((x) => x.key), nav.subject, d) }); return; }
+    const so = L.subjects.find((x) => x.key === nav.subject);
+    if (lv === 2) { go(2, { chapter: cycle(so.chapters, nav.chapter, d) }); return; }
+    go(3, { star: cycle(starsOf(nav.chapter), nav.star, d) });
+  }
+  /** Enter：进入下一层的第一个（章节按旋臂顺序，考点按分值）。 */
+  function enter() {
+    const lv = nav.level;
+    if (lv === 0) go(1, { subject: L.subjects[0].key });
+    else if (lv === 1) go(2, { chapter: L.subjects.find((x) => x.key === nav.subject).chapters[0] });
+    else if (lv === 2) go(3, { star: starsOf(nav.chapter)[0] });
+  }
   window.addEventListener("keydown", onKey);
 
   function resize() {
@@ -561,6 +660,7 @@ export function mountScore(ctx, container, signal) {
     composer.setPixelRatio(dpr); composer.setSize(cw, ch);
     camera.aspect = cw / ch; camera.updateProjectionMatrix();
     root.classList.toggle("sk-narrow", cw < 760);
+    root.classList.toggle("sk-mid", cw < 1120);
     galaxy.material.uniforms.uPR.value = dpr; galaxy.material.uniforms.uScale.value = ch * 0.9;
     sparks.points.material.uniforms.uPR.value = dpr;
     if (field) field.material.uniforms.uPR.value = dpr;
@@ -685,21 +785,17 @@ export function mountScore(ctx, container, signal) {
     if (l.m >= 0.1) return ["听过讲解", "sk-st-low"];
     return ["刚接触", "sk-st-low"];
   }
-  const orbDot = (l) => {
-    const m = l.n ? (l.now ?? l.m ?? 0) : 0;
-    return el("i", { class: `sk-orb${l.due ? " sk-orb-due" : ""}`, style: `--g:${m.toFixed(2)}` });
-  };
-  const head = (kicker, title, score, max, extra) => el("header", "sk-head",
+  /** 刻度尺：一根 1px 底线 + 10 等分刻度；实线＝已有，竖线 tick＝下一档的位置。 */
+  const scale = (v, tick = null, cls = "") => el("div", `sk-scale ${cls}`, el("i", { style: `width:${clamp(v, 0, 1) * 100}%` }), tick != null ? el("b", { style: `left:${clamp(tick, 0, 1) * 100}%` }) : null);
+  const head = (kicker, title, score, max, extra, tick = null, due = false) => el("header", "sk-head",
     el("div", "sk-kicker", kicker),
     el("h3", "sk-title", title, extra),
-    el("div", "sk-headline", el("div", "sk-big", el("b", null, f1(score)), el("span", null, ` / ${f1(max).replace(/\.0$/, "")}`)), el("div", "sk-pct", pct(max ? score / max : 0))),
-    bar(max ? score / max : 0, "sk-bar-lg"));
-  function leafRow(l) {
-    const [st, cls] = state(l);
-    return el("button", { type: "button", class: "sk-row-btn", onclick: () => { const s = starOf(l.id); if (s) { nav.subject = s.subject; nav.chapter = s.chapter; go(3, { star: s }); } } },
-      orbDot(l),
-      el("span", "sk-row-name", l.name),
-      el("span", `sk-st ${cls}`, st),
+    el("div", "sk-headline", el("div", "sk-big", el("b", null, f1(score)), el("span", null, `/ ${f1(max).replace(/\.0$/, "")}`)), el("div", "sk-pct", pct(max ? score / max : 0))),
+    scale(max ? score / max : 0, tick, due ? "sk-scale-due" : ""));
+  function leafRow(l, i) {
+    return el("button", { type: "button", class: `sk-row-btn${nav.star?.id === l.id ? " sk-cur" : ""}`, title: state(l)[0], onclick: () => { const s = starOf(l.id); if (s) { nav.subject = s.subject; nav.chapter = s.chapter; go(3, { star: s }); } } },
+      el("span", "sk-row-i", String(i + 1).padStart(2, "0")),
+      el("span", "sk-row-name", l.name, l.due && !l.vocab ? el("span", "sk-row-due", "该复习") : null),
       el("span", "sk-row-num", f1(l.score), el("small", null, `/${f1(l.points)}`)),
       bar(l.points ? l.score / l.points : 0, l.due ? "sk-bar-due" : ""));
   }
@@ -711,25 +807,26 @@ export function mountScore(ctx, container, signal) {
     const gain = leaves.filter((l) => !l.vocab).map((l) => ({ ...l, gap: l.points - l.score })).sort((a, b) => b.gap - a.gap).slice(0, 5);
     const due = leaves.filter((l) => l.due && !l.vocab).sort((a, b) => (b.loss || 0) - (a.loss || 0));
     openPanel(
-      head("旋臂", s.name, s.score, s.max),
+      head("科目", s.name, s.score, s.max),
+      due.length ? el("section", "sk-sec", el("h4", "sk-h sk-h-due", `该复习（${due.length}）`), ...more(due.slice(0, 12).map(leafRow), 3, `再看 ${Math.min(12, due.length) - 3} 个`)) : null,
+      el("section", "sk-sec", el("h4", "sk-h", "最值得补"), el("p", "sk-note", "按「分值 − 已拿到的分」排，先补这些预测分涨得最快。"), ...more(gain.map(leafRow), 3, `再看 ${gain.length - 3} 个`)),
       el("section", "sk-sec",
         el("h4", "sk-h", "模块"),
-        ...s.modules.map((m) => el("div", "sk-card",
-          el("div", "sk-card-head", el("b", null, MOD_SHORT[m.name] || m.name), el("span", "sk-row-num", f1(m.score), el("small", null, `/${m.max}`))),
-          bar(m.max ? m.score / m.max : 0),
+        ...s.modules.map((m) => el("details", { class: "sk-card", open: s.modules.length === 1 },
+          el("summary", null, el("span", "sk-card-name", MOD_SHORT[m.name] || m.name), el("span", "sk-row-num", f1(m.score), el("small", null, `/${m.max}`)), bar(m.max ? m.score / m.max : 0)),
           el("div", "sk-card-rows", ...m.chapters.map((c) => el("button", { type: "button", class: "sk-chrow", onclick: () => { const cs = so.chapters.find((x) => x.name === c.name && x.module === m.name); if (cs) go(2, { chapter: cs }); } },
             el("span", "sk-chrow-name", c.name),
             el("span", "sk-chrow-bar", el("i", { style: `width:${c.max ? clamp(c.score / c.max, 0, 1) * 100 : 0}%` })),
-            el("span", "sk-row-num", f1(c.score), el("small", null, `/${f1(c.max)}`)))))))),
-      due.length ? el("section", "sk-sec", el("h4", "sk-h sk-h-due", `该复习 · ${due.length}`), ...due.slice(0, 8).map(leafRow)) : null,
-      el("section", "sk-sec", el("h4", "sk-h", "最值得补"), el("p", "sk-note", "按「分值 − 已拿到的分」排：先补这些，预测分涨得最快。"), ...gain.map(leafRow)));
+            el("span", "sk-row-num", f1(c.score), el("small", null, `/${f1(c.max)}`)))))))));
   }
+  /** 先列 n 个，其余收进「再看几个」。 */
+  const more = (rows, n, label) => (rows.length > n + 1 ? [...rows.slice(0, n), el("details", "sk-more", el("summary", null, label), ...rows.slice(n))] : rows);
   function showChapter(cs) {
     redo = () => showChapter(cs);
     const c = cs.c;
     openPanel(
-      head(`${SUBJ[cs.subject].short} · ${MOD_SHORT[cs.module] || cs.module}`, cs.name, c.score, c.max),
-      el("section", "sk-sec", el("h4", "sk-h", `考点 · ${c.leaves.length}`), ...c.leaves.slice().sort((a, b) => b.points - a.points).map(leafRow)));
+      head(`${SUBJ[cs.subject].short} / ${MOD_SHORT[cs.module] || cs.module}`, cs.name, c.score, c.max),
+      el("section", "sk-sec", el("h4", "sk-h", `考点（${c.leaves.length}）`), ...c.leaves.slice().sort((a, b) => b.points - a.points).map(leafRow)));
   }
   function practiceIds(ids, subject, title) {
     sessionStorage.setItem("ky-exam-preset", JSON.stringify({ mode: "ids", subject, ids, minutes: 0, title }));
@@ -750,34 +847,42 @@ export function mountScore(ctx, container, signal) {
       const tt = (Date.now() - Date.parse(l.last)) / 86400000 + days;
       return l.points * l.m * (0.6 + 0.4 / (1 + tt / (9 * l.S)));
     };
+    const practice = btn("用真题练这个考点", null, "sk-btn sk-btn-primary");
+    practice.disabled = true;
+    put(actions, practice, btn("复制学习开场白", async () => {
+      const text = l.n ? `${l.name}（复习，按考研难度直接练真题考法）` : `【学习】${l.name}`;
+      toast(root, (await copy(text)) ? `已复制：${text}` : text);
+    }, "sk-btn"));
+    const ev = l.evidence || [];
     openPanel(
-      head(`${SUBJ[s.key].short} · ${hit.c.name}`, l.name, l.score, l.points, el("span", `sk-st ${cls}`, stt)),
+      head(`${SUBJ[s.key].short} / ${hit.c.name}`, l.name, l.score, l.points, el("span", `sk-st ${cls}`, stt), nextCap(l), l.due),
       el("div", "sk-stats",
         el("div", "sk-stat", el("span", null, "掌握度"), el("b", null, pct(l.m)), el("small", null, l.n ? `${l.n} 道题 / 记录${l.top ? ` · 做对过最难：${TIER_NAMES[l.top]}` : ""}` : "还没有记录")),
         el("div", "sk-stat", el("span", null, "记忆保持"), el("b", null, l.last ? pct(l.R) : "—"), el("small", null, l.last ? `稳定约 ${Math.round(l.S)} 天` : "还没学过")),
         el("div", "sk-stat", el("span", null, "历年真题"), el("b", null, `${Math.round(l.realCount || 0)}`), el("small", null, "道左右考到"))),
-      el("p", "sk-note", l.last ? (l.due ? `上次学是 ${ago(l.last)}，记忆掉到 ${pct(l.R)}，该复习了。` : `上次学是 ${ago(l.last)}，约 ${fmtDate(l.dueAt)} 该复习。`) + ` 不复习：30 天后约 ${f1(forecast(30))} 分，90 天后约 ${f1(forecast(90))} 分。` : "在会话里学过并结算、或做对练习题和真题后，这颗星会亮起来。"),
       actions,
+      el("p", "sk-note", l.last ? (l.due ? `上次学是 ${ago(l.last)}，记忆掉到 ${pct(l.R)}，该复习了。` : `上次学是 ${ago(l.last)}，约 ${fmtDate(l.dueAt)} 该复习。`) + `不复习的话，30 天后约 ${f1(forecast(30))} 分，90 天后约 ${f1(forecast(90))} 分。` : "在会话里学过并结算、或做对练习题和真题后，这颗星会亮起来。"),
       tierLadder(l),
       el("section", "sk-sec", el("h4", "sk-h", "相关真题"), qinfo),
-      el("section", "sk-sec", el("h4", "sk-h", "分数来源"),
-        l.evidence?.length ? el("div", "sk-ev", ...l.evidence.slice(0, 20).map((e) => el("div", "sk-ev-row",
-          el("span", "sk-ev-date", fmtDate(e.at).slice(5)),
-          el("span", `sk-kind sk-k-${e.kind}`, `${KIND_LABEL[e.kind]}${e.tier && e.kind !== "taught" ? `·${e.tier}` : ""}`),
-          el("span", "sk-ev-label", e.label, e.note ? el("small", null, e.note) : null),
-          el("b", e.delta >= 0 ? "sk-up" : "sk-down", `${e.delta >= 0 ? "+" : ""}${e.delta.toFixed(2)}`)))) : el("p", "sk-note", "还没有记录。")));
-    put(actions, btn("复制学习开场白", async () => {
-      const text = l.n ? `${l.name}（复习，按考研难度直接练真题考法）` : `【学习】${l.name}`;
-      toast(root, (await copy(text)) ? `已复制：${text}` : text);
-    }, "sk-btn"));
+      el("section", "sk-sec",
+        ev.length ? el("details", "sk-more",
+          el("summary", null, `分数来源（${ev.length} 条）`),
+          el("div", "sk-ev", ...ev.slice(0, 20).map((e) => el("div", "sk-ev-row",
+            el("span", "sk-ev-date", fmtDate(e.at).slice(5)),
+            el("span", `sk-kind sk-k-${e.kind}`, `${KIND_LABEL[e.kind]}${e.tier && e.kind !== "taught" ? ` ${e.tier}` : ""}`),
+            el("span", "sk-ev-label", e.label, e.note ? el("small", null, e.note) : null),
+            el("b", e.delta >= 0 ? "sk-up" : "sk-down", `${e.delta >= 0 ? "+" : ""}${e.delta.toFixed(2)}`))))) : el("p", "sk-note", "还没有分数记录。")));
     ctx.call("score.questions", { leaf: l.id, limit: 10 }).then((r) => {
-      if (!r.total) { reset(qinfo, el("p", "sk-note", "题库里没有归到这个考点的真题。可以开练习会话让 AI 按真题难度出题。")); return; }
-      actions.prepend(btn("用真题练这个考点", () => practiceIds(r.items.slice(0, 8).map((x) => x.id), s.key, `真题 · ${l.name}`), "sk-btn sk-btn-primary"));
-      reset(qinfo, el("p", "sk-note", `题库里 ${r.total} 道，做过 ${r.done} 道。`),
-        ...r.items.map((q) => { const kind = q.done ? (q.lastCorrect ? "good" : "bad") : "todo"; return el("button", { type: "button", class: "sk-row-btn sk-q", onclick: () => showPlanet(q, kind) },
-          el("i", `sk-orb sk-orb-${kind}`), el("span", "sk-row-name", `${q.paper} 第${q.number}题`), el("span", "sk-row-num", `${TIER_NAMES[q.d] || ""} · ${q.type} · ${q.score || "?"}分`)); }));
-    }, () => reset(qinfo));
+      if (!r.total) { practice.remove(); reset(qinfo, el("p", "sk-note", "题库里没有归到这个考点的真题。可以开练习会话让 AI 按真题难度出题。")); return; }
+      practice.disabled = false;
+      practice.addEventListener("click", () => practiceIds(r.items.slice(0, 8).map((x) => x.id), s.key, `真题：${l.name}`));
+      const rows = r.items.map((q) => { const kind = q.done ? (q.lastCorrect ? "good" : "bad") : "todo"; return el("button", { type: "button", class: "sk-row-btn sk-q", title: kind === "good" ? "做对过" : kind === "bad" ? "做错过" : "还没做", onclick: () => showPlanet(q, kind) },
+        el("i", `sk-orb sk-orb-${kind}`), el("span", "sk-row-name", `${q.paper} 第${q.number}题`), el("span", "sk-row-num", `${TIER_NAMES[q.d] || ""}  ${q.type}  ${q.score || "?"}分`)); });
+      reset(qinfo, el("p", "sk-note", `题库里 ${r.total} 道，做过 ${r.done} 道。实心点＝做对过，空心圈＝做错过，虚线圈＝还没做。`), ...more(rows, 5, `再看 ${rows.length - 5} 道`));
+    }, () => { practice.remove(); reset(qinfo); });
   }
+  /** 下一档的掌握度上限（刻度尺上的竖线）。 */
+  const nextCap = (l) => { const tiers = data.tiers || []; if (!tiers.length || !l.n) return null; const m = l.m || 0; const T = tiers.find((x) => x.cap > m + 0.03); return T ? T.cap : null; };
   /** 难度阶梯：每档有掌握度上限；超过某档上限后，这一档的题几乎不再加分。 */
   function tierLadder(l) {
     const tiers = data.tiers || [];
@@ -787,10 +892,8 @@ export function mountScore(ctx, container, signal) {
     const tip = !l.n ? "从「基础」「简单」题开始做，每做对一题这颗星就亮一点。"
       : m >= 0.97 ? "已经满了：各档的题都做对过。之后注意隔一段时间复习。"
       : `现在掌握 ${pct(m)}：${next.d > 1 ? `${tiers.slice(0, next.d - 1).map((T) => T.name).join("、")}题已经加不了多少分，` : ""}做「${next.name}」及以上的题才能继续涨。`;
-    return el("section", "sk-sec",
-      el("h4", "sk-h", "难度阶梯"),
-      el("p", "sk-note", tip),
-      el("div", "sk-tiers", ...tiers.map((T) => {
+    const near = (T) => Math.abs(T.d - next.d) <= 1;
+    const rows = tiers.map((T) => {
         const lo = T.d > 1 ? tiers[T.d - 2].cap : 0;
         const fill = clamp((m - lo) / (T.cap - lo), 0, 1);
         const cls = fill >= 0.97 ? " sk-tier-full" : T.d === next.d ? " sk-tier-now" : "";
@@ -799,7 +902,13 @@ export function mountScore(ctx, container, signal) {
           el("span", "sk-tier-bar", el("i", { style: `width:${fill * 100}%` })),
           el("span", "sk-tier-tag", (l.top || 0) >= T.d ? "做对过" : T.d === next.d ? "下一步" : ""),
           el("small", "sk-tier-desc", T.desc));
-      })));
+    });
+    const shown = rows.filter((_, i) => near(tiers[i])), rest = rows.filter((_, i) => !near(tiers[i]));
+    return el("section", "sk-sec",
+      el("h4", "sk-h", "难度阶梯"),
+      el("p", "sk-note", tip),
+      el("div", "sk-tiers", ...shown),
+      rest.length ? el("details", "sk-more", el("summary", null, `其余 ${rest.length} 档`), el("div", "sk-tiers", ...rest)) : null);
   }
   function showPlanet(q, kind) {
     const st = nav.star;
@@ -845,9 +954,9 @@ export function mountScore(ctx, container, signal) {
   function showReview() {
     redo = showReview;
     openPanel(
-      el("header", "sk-head", el("div", "sk-kicker sk-due-c", "外圈泛起琥珀色光环的星"), el("h3", "sk-title", `该复习了 · ${data.reviewCount}`)),
+      el("header", "sk-head", el("div", "sk-kicker sk-due-c", "外圈有冰蓝细环的星"), el("h3", "sk-title", `该复习了 · ${data.reviewCount}`)),
       el("p", "sk-note", "记忆保持率掉到 85% 以下的考点，按「再不复习会丢多少分」排序。复习成功一次，稳定度会翻倍，以后掉得更慢。"),
-      data.review.length ? el("div", "sk-list", ...data.review.map((x) => { const h = findLeaf(x.id); return h ? leafRow(h.l) : null; })) : el("p", "sk-note", "现在没有需要复习的考点。"));
+      data.review.length ? el("div", "sk-list", ...data.review.map((x, i) => { const h = findLeaf(x.id); return h ? leafRow(h.l, i) : null; })) : el("p", "sk-note", "现在没有需要复习的考点。"));
   }
 
   // ── 问号弹层：怎么读、全亮预览、高级 ──────────────────────
@@ -859,11 +968,20 @@ export function mountScore(ctx, container, signal) {
       el("div", "sk-pop-h", "怎么读这片星系"),
       el("div", "sk-legend",
         el("div", "sk-legend-row", el("span", "sk-legend-orbs", el("i", { class: "sk-orb", style: "--g:0" }), el("i", { class: "sk-orb", style: "--g:.45" }), el("i", { class: "sk-orb", style: "--g:1" })), el("span", null, "星的亮度＝掌握程度")),
-        el("div", "sk-legend-row", el("span", "sk-legend-orbs", el("i", { class: "sk-orb sk-orb-due", style: "--g:.5" })), el("span", null, "外圈琥珀色光环＝记忆在掉，该复习")),
+        el("div", "sk-legend-row", el("span", "sk-legend-orbs", el("i", { class: "sk-orb sk-orb-due", style: "--g:.5" })), el("span", null, "外圈冰蓝细环＝记忆在掉，该复习")),
         el("div", "sk-legend-row", el("span", "sk-legend-orbs", el("i", { class: "sk-orb sk-orb-s", style: "--g:.6" }), el("i", { class: "sk-orb sk-orb-l", style: "--g:.6" })), el("span", null, "球越大，这个考点分值越高")),
         el("div", "sk-legend-row", el("span", "sk-legend-orbs sk-legend-dust"), el("span", null, "背景星跟着所在章节变亮；模块到 60% / 80% / 100% 时那片天空放一圈光波"))),
       el("p", "sk-pop-p", "四条旋臂是四科，旋臂上的星座是章节，星座里的星是考点。每个考点的分＝分值 × 掌握度 × 记忆保持。每做完一道题（真题、习题、会话里的题、错题重做、讲题批改），就按这道题的难度给对应考点的星加分：难度分 5 档（基础 30% · 简单 50% · 中档 70% · 较难 85% · 压轴 100%），每档有掌握度上限。刚开始简单题也能加分；分越高，简单题加得越少，要更难的题才能继续涨，各档都做对过才能满。做错会往回掉一点（简单题做错掉得多）。只听讲解按「基础」档算。不复习会慢慢掉，最多掉到 60%。"),
       el("div", "sk-pop-actions", btn("预览全部点亮", startPreview, "sk-btn sk-btn-primary"), btn("刷新数据", () => { closePop(); load(true); }, "sk-btn")),
+      el("details", "sk-pop-adv",
+        el("summary", null, "键盘和显示"),
+        el("div", "sk-keys",
+          el("kbd", null, "← →"), el("span", null, "同一层换科目、章节或考点"),
+          el("kbd", null, "Enter"), el("span", null, "进入下一层"),
+          el("kbd", null, "Esc"), el("span", null, "返回上一层（Backspace 也行）")),
+        el("label", "sk-switch",
+          el("input", { type: "checkbox", checked: root.classList.contains("sk-solid"), onchange: (e) => { root.classList.toggle("sk-solid", e.target.checked); jset(SOLID_KEY, e.target.checked); } }),
+          "降低透明度（面板换成实色，字更清楚）")),
       el("details", "sk-pop-adv",
         el("summary", null, "高级 · 题目难度"),
         el("p", "sk-pop-p", `每道题库题的难度决定做对它能加多少分。不用先评：做到还没评过的题时（快练 / 模考交卷、会话里取题和记录、错题重做），AI 会在后台自动评；没评到之前按题型和位置估（选择 / 填空中档、解答题较难、每份卷子最后两道解答题压轴）。分数每次都按全部记录重算，所以晚评的题，以前的加分也会跟着更新。这个按钮是一次把整个题库评完（AI 选题时就能按难度挑题）：现在评过 ${fi.diffCount || 0} / ${fi.bankTotal || "?"} 道，每 30 道一次调用，可以中途停下、下次接着来。用的是「便宜」模型槽（设置 → 模型）。`),
@@ -919,7 +1037,7 @@ export function mountScore(ctx, container, signal) {
     const g = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "sk-chart" });
     for (let i = 0; i <= 4; i++) { const v = (maxY / 4) * i; g.append(svg("line", { x1: P.l, x2: W - P.r, y1: Y(v), y2: Y(v), class: "sk-gridline" }), svg("text", { x: P.l - 8, y: Y(v) + 4, class: "sk-axis", "text-anchor": "end" }, txt(Math.round(v)))); }
     [0, Math.floor((n - 1) / 2), n - 1].forEach((i) => { if (h[i]) g.append(svg("text", { x: X(i), y: H - 8, class: "sk-axis", "text-anchor": "middle" }, txt(h[i].day.slice(5)))); });
-    const line = (vals, cls, w) => svg("path", { d: vals.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(" "), class: cls, "stroke-width": w, pathLength: 1 });
+    const line = (vals, cls, w) => svg("path", { d: vals.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(" "), class: cls, "stroke-width": w, pathLength: cls.includes("total") ? 1 : undefined });
     g.append(svg("path", { d: `M${X(0)} ${Y(0)} ${h.map((x, i) => `L${X(i).toFixed(1)} ${Y(x.total).toFixed(1)}`).join(" ")} L${X(n - 1)} ${Y(0)} Z`, class: "sk-area" }));
     KEYS.forEach((key) => g.append(line(h.map((x) => x.subjects[key] || 0), `sk-line sk-line-${SUBJ[key].arm}`, 1.2)));
     g.append(line(h.map((x) => x.total), "sk-line sk-line-total", 2));
@@ -1043,22 +1161,23 @@ export function mountScore(ctx, container, signal) {
     const p = data.projection;
     const num = el("b", "sk-total", f1(prevTotal ?? data.total));
     reset(scoreBox,
-      el("div", "sk-score-k", "现在去考 · 预计"),
+      el("div", "sk-score-k", "现在去考，预计"),
       el("div", "sk-score-line", num, el("span", "sk-max", "/ 500")),
-      el("div", "sk-proj", el("span", null, "考试那天"), el("b", null, Math.round(p.value)), el("span", null, `${Math.round(p.low)}–${Math.round(p.high)}`)));
+      scale(data.total / 500, p.value / 500),
+      el("div", "sk-proj", el("span", null, "考试那天预计"), el("b", null, Math.round(p.value)), el("small", null, `可能在 ${Math.round(p.low)}–${Math.round(p.high)} 之间`)));
     countUp(num, prevTotal ?? data.total, data.total);
     reset(tools,
       data.reviewCount ? el("button", { type: "button", class: "sk-pill sk-pill-due", onclick: showReview }, el("i"), `该复习 ${data.reviewCount}`) : null,
       el("button", { type: "button", class: "sk-pill", onclick: () => openSheet() }, "学习情况"),
-      el("button", { type: "button", class: "sk-pill sk-pill-icon", "aria-label": "怎么读", onclick: (e) => { e.stopPropagation(); pop.classList.contains("sk-on") ? closePop() : openPop(); } }, "?"));
-    reset(dock, ...data.subjects.map((s) => el("button", { type: "button", class: "sk-chip", style: `--c:${SUBJ[s.key].css}`, onclick: () => go(1, { subject: s.key }) },
+      el("button", { type: "button", class: "sk-pill sk-pill-icon", "aria-label": "怎么读这片星系", title: "怎么读这片星系", onclick: (e) => { e.stopPropagation(); pop.classList.contains("sk-on") ? closePop() : openPop(); } }, "?"));
+    reset(dock, ...data.subjects.map((s) => el("button", { type: "button", class: `sk-chip${nav.subject === s.key ? " sk-on" : ""}`, "data-key": s.key, onclick: () => go(1, { subject: s.key }) },
       el("span", "sk-chip-name", SUBJ[s.key].short), el("span", "sk-chip-num", el("b", null, f1(s.score)), `/${s.max}`), bar(s.score / s.max))));
     const recent = allChanges().slice(0, 5);
     reset(feed, recent.length ? el("div", "sk-feed-h", el("i"), `最近 ${recent.length} 次变化`) : null,
       el("div", "sk-feed-list", ...recent.map((e) => el("button", { type: "button", class: "sk-feed-row", onclick: () => openChange(e) },
         el("b", e.delta >= 0 ? "sk-up" : "sk-down", fDelta(e.delta)),
         el("span", null, e.name),
-        el("small", null, `${KIND_LABEL[e.kind] || e.kind}${e.count > 1 ? ` ×${e.count}` : ""} · ${ago(e.at)}`)))));
+        el("small", null, `${KIND_LABEL[e.kind] || e.kind}${e.count > 1 ? ` ×${e.count}` : ""}，${ago(e.at)}`)))));
   }
   const fDelta = (d) => `${d >= 0 ? "+" : ""}${Math.abs(d) < 0.1 ? d.toFixed(2) : d.toFixed(1)}`;
   /** 所有分数变化（新的在前）：考点证据按「同一天、同一考点、同一类」合并，再加上墨墨词汇每天的变化。 */
@@ -1130,8 +1249,10 @@ export function mountScore(ctx, container, signal) {
       if (first) {
         resize(); renderCrumbs(); renderHint();
         root.dataset.level = "0";
-        flyTo(0, reduceMotion() ? 1 : 3800);
+        flyTo(0, reduceMotion() ? 1 : 3200);
         veil.classList.add("sk-off");
+        // 首屏只有一个主时刻：星系从暗处亮起；界面在遮罩淡完时一起出现
+        setTimeout(() => root.classList.remove("sk-intro"), reduceMotion() ? 0 : 700);
         const t0 = performance.now();
         const fade = (t) => { if (signal.aborted) return; intro = clamp((t - t0) / 2600, 0, 1); if (intro < 1) requestAnimationFrame(fade); };
         requestAnimationFrame(fade);

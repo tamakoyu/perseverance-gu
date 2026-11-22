@@ -9,7 +9,7 @@ export function mountEnglish(ctx, container, signal) {
   const body = el("div");
 
   function render() {
-    reset(root, el("h2", "ky-h2", "英语专项"),
+    reset(root,
       tabs([["real", "真题"], ["vocab", "生词本"], ["sentence", "长难句"], ["essay", "作文批改"]], tab, (k) => { tab = k; render(); }), body);
     reset(body);
     if (tab === "real") mountEnglishPractice(ctx, body, signal);

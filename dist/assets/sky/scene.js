@@ -290,7 +290,7 @@ export class Orb {
     this.body.renderOrder = 1;
     this.corona = new THREE.Mesh(QUAD, new THREE.ShaderMaterial({
       vertexShader: billboardVS, fragmentShader: coronaFS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-      uniforms: { uColor: { value: this.color.clone() }, uI: { value: 0 }, uTime: { value: 0 }, uSeed: { value: seed }, uSpikes: { value: 0 }, uFlash: { value: 0 }, uRing: { value: 0 }, uRingColor: { value: new THREE.Color(1.0, 0.68, 0.32) }, uHover: { value: 0 }, uCore: { value: 0.33 }, uMinI: { value: 0.06 } },
+      uniforms: { uColor: { value: this.color.clone() }, uI: { value: 0 }, uTime: { value: 0 }, uSeed: { value: seed }, uSpikes: { value: 0 }, uFlash: { value: 0 }, uRing: { value: 0 }, uRingColor: { value: new THREE.Color(0.66, 0.78, 1.0) }, uHover: { value: 0 }, uCore: { value: 0.33 }, uMinI: { value: 0.06 } },
     }));
     this.corona.renderOrder = 4;
     this.halo = halo;

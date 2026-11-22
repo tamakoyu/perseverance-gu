@@ -74,8 +74,8 @@ export function mountEnglishPractice(ctx, host, signal, { onLeave } = {}) {
     const action = el("div", "ky-eng-action");
     put(root, el("section", "ky-card ky-eng-gridcard",
       el("div", "ky-eng-legend",
-        el("span", null, el("i", "ky-eng-dot ky-s-todo"), "没做"), el("span", null, el("i", "ky-eng-dot ky-s-good"), "≥80%"),
-        el("span", null, el("i", "ky-eng-dot ky-s-mid"), "50–80%"), el("span", null, el("i", "ky-eng-dot ky-s-bad"), "<50%"),
+        el("span", null, el("i", "ky-eng-dot ky-s-todo"), "没做"), el("span", null, el("i", "ky-eng-dot ky-s-good"), "✓ ≥80%"),
+        el("span", null, el("i", "ky-eng-dot ky-s-mid"), "½ 50–80%"), el("span", null, el("i", "ky-eng-dot ky-s-bad"), "✗ <50%"),
         el("span", "ky-muted", "点格子选中 / 取消；点年份选整套；点表头选该列没做过的")),
       el("div", "ky-eng-gridwrap", table), detail), action);
 

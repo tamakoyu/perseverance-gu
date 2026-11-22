@@ -11,7 +11,7 @@ export async function openSettleDialog(ctx, chatId) {
   settleBox?.remove();
   const body = el("div", "ky-settle-body", el("p", "ky-muted", "AI 正在读这次的对话，评估各考点的掌握程度…"));
   const box = el("div", "ky-settle",
-    el("div", "ky-settle-head", el("b", null, "结算本次学习"), el("button", { type: "button", class: "ky-sky-x", "aria-label": "关闭", onclick: () => box.remove() }, "×")),
+    el("div", "ky-settle-head", el("b", null, "结算本次学习"), el("button", { type: "button", class: "ky-x", "aria-label": "关闭", onclick: () => box.remove() }, "×")),
     body);
   settleBox = box;
   document.body.append(box);
@@ -26,7 +26,7 @@ export async function openSettleDialog(ctx, chatId) {
         const d = imp.items.find((i) => i.id === x.leaf);
         return el("div", "ky-settle-row",
           el("span", "ky-settle-name", x.name, el("small", null, `${x.subject} · ${x.chapter}`)),
-          el("span", `ky-sky-kind ky-k-${x.kind}`, `${KIND_LABEL[x.kind]}·${x.result}`),
+          el("span", `ky-kind ky-k-${x.kind}`, `${KIND_LABEL[x.kind]}·${x.result}`),
           el("b", (d?.delta || 0) >= 0 ? "ky-up" : "ky-down", d ? `${d.delta >= 0 ? "+" : ""}${d.delta.toFixed(2)}` : "±0"));
       })) : el("p", "ky-muted", "这次会话里没找到讲过或练过的考点。"),
       el("div", "ky-row", btn("打开拾星", () => { box.remove(); ctx.app.openView("score"); }, "ky-btn ky-btn-primary"), btn("关闭", () => box.remove())));

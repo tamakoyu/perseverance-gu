@@ -163,6 +163,7 @@ export async function runJob(ctx, host, start, label = "处理中") {
     return await waitJob(ctx, job, (j) => {
       msg.textContent = `${j.label || label}：${j.message || ""}${j.total ? `（${j.done}/${j.total}）` : ""}`;
       bar.firstChild.style.width = j.total ? `${Math.round((j.done / j.total) * 100)}%` : "15%";
+      bar.firstChild.classList.toggle("ky-progress-smooth", !!j.total); // 知道进度就不再闪
     });
   } finally {
     box.remove();
@@ -170,7 +171,7 @@ export async function runJob(ctx, host, start, label = "处理中") {
 }
 
 export function tabs(items, current, onPick) {
-  return el("div", "ky-tabs", ...items.map(([key, label]) => el("button", { type: "button", class: `ky-tab${key === current ? " ky-on" : ""}`, onclick: () => onPick(key) }, label)));
+  return el("div", { class: "ky-tabs", role: "tablist" }, ...items.map(([key, label]) => el("button", { type: "button", role: "tab", "aria-selected": key === current ? "true" : "false", class: `ky-tab${key === current ? " ky-on" : ""}`, onclick: () => onPick(key) }, label)));
 }
 
 export async function copy(text) {

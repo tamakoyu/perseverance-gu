@@ -16,7 +16,7 @@ export function mountBank(ctx, container, signal) {
   }
 
   function render() {
-    reset(root, el("h2", "ky-h2", "题库"), tabs([["progress", "完成情况"], ["papers", `试卷（${papers.length}）`], ["import", "导入"], ["search", "搜索题目"]], tab, (k) => { tab = k; current = null; render(); }), body);
+    reset(root, tabs([["progress", "完成情况"], ["papers", `试卷（${papers.length}）`], ["import", "导入"], ["search", "搜索题目"]], tab, (k) => { tab = k; current = null; render(); }), body);
     reset(body);
     if (tab === "progress") mountBankProgress(ctx, body, signal);
     else if (tab === "papers") current ? renderPaper(current) : renderPapers();
@@ -186,7 +186,7 @@ export function mountBank(ctx, container, signal) {
         showView();
         put(det, view, editor,
           el("div", "ky-row", editBtn, saveBtn,
-            btn("删除这题", async () => { if (confirm("删除这道题？")) { await ctx.call("bank.delete", { id: q.id }); det.remove(); } }, "ky-btn ky-btn-danger")));
+            btn("删除这题", async () => { if (confirm("删除这道题？")) { await ctx.call("bank.delete", { id: q.id }); det.remove(); } }, "ky-btn ky-btn-ghost ky-btn-danger")));
       } else {
         put(det, el("h4", "ky-h4", "答案"), md(ctx, q.answer || "—", signal), q.analysis ? md(ctx, q.analysis, signal) : null);
       }
@@ -197,7 +197,7 @@ export function mountBank(ctx, container, signal) {
   async function renderPaper(paper) {
     put(body, el("div", "ky-row", btn("← 返回", () => { current = null; render(); }, "ky-btn ky-btn-ghost"), el("h3", "ky-h3", paper),
       btn("整套模考", () => { sessionStorage.setItem("ky-exam-preset", JSON.stringify({ mode: "full", paper })); ctx.app.openView("exam"); }, "ky-btn ky-btn-primary"),
-      btn("删除整套", async () => { if (confirm(`删除「${paper}」的全部题目？`)) { await ctx.call("bank.deletePaper", { paper }); current = null; load(); } }, "ky-btn ky-btn-danger")));
+      btn("删除整套", async () => { if (confirm(`删除「${paper}」的全部题目？`)) { await ctx.call("bank.deletePaper", { paper }); current = null; load(); } }, "ky-btn ky-btn-ghost ky-btn-danger")));
     put(body, missingBox(paper), figureBox(paper));
     const list = el("div");
     put(body, list);

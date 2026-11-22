@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拾星样板二</title>
+<style>
+:root {
+  --bg: #0b0c0f;
+  --ink: #ecebe6; --ink2: #a8a9ad; --ink3: #77797f;
+  --rule: rgba(236,235,230,.12); --rule2: rgba(236,235,230,.24);
+  --signal: #a9bfdf;
+  --panel: rgba(17,18,21,.94);
+  --ease: cubic-bezier(.25,.46,.45,.94);
+  --num: "SF Pro Display", "Helvetica Neue", "PingFang SC", sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.6 "PingFang SC", -apple-system, "Helvetica Neue", sans-serif; -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 28px 24px 64px; }
+.cap { font-size: 12px; color: var(--ink3); margin: 28px 0 10px; }
+
+/* 舞台：星空 */
+.sky { position: relative; height: 640px; border-radius: 14px; overflow: hidden; background: #010103; }
+.sky canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* 左上角压暗一点，字直接放在星空上也读得清（不再用玻璃卡片） */
+.sky::before { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  background: radial-gradient(60% 50% at 0% 0%, rgba(1,1,3,.72), transparent 70%), radial-gradient(70% 30% at 50% 100%, rgba(1,1,3,.8), transparent 80%); }
+.hud { position: absolute; z-index: 2; }
+
+/* 左上：分数——只有字，没有卡片 */
+.score { left: 32px; top: 28px; }
+.score .k { font-size: 12px; color: var(--ink2); }
+.score .n { font: 200 64px/1 var(--num); letter-spacing: -.02em; font-variant-numeric: tabular-nums; margin: 6px 0 2px; }
+.score .n small { font-size: 15px; font-weight: 300; color: var(--ink3); letter-spacing: 0; margin-left: 6px; }
+.scale { position: relative; width: 240px; height: 9px; margin: 10px 0 12px; border-bottom: 1px solid var(--rule2);
+  background: repeating-linear-gradient(90deg, var(--rule2) 0 1px, transparent 1px 24px) bottom / 100% 4px no-repeat; }
+.scale i { position: absolute; bottom: -1px; left: 0; height: 1px; background: var(--ink); }
+.scale b { position: absolute; bottom: -4px; width: 1px; height: 13px; background: var(--ink); }
+.score .p { font-size: 12.5px; color: var(--ink2); font-variant-numeric: tabular-nums; }
+.score .p em { font-style: normal; color: var(--ink); font: 300 17px var(--num); margin: 0 4px; }
+.crumbs { left: 32px; top: 196px; display: flex; gap: 8px; font-size: 12.5px; color: var(--ink3); }
+.crumbs a { color: var(--ink2); text-decoration: none; cursor: pointer; transition: color .12s var(--ease); }
+.crumbs a:hover { color: var(--ink); }
+.crumbs .on { color: var(--ink); }
+
+/* 右上：工具——文字按钮 */
+.tools { right: 412px; top: 26px; display: flex; gap: 4px; align-items: center; }
+
+/* 底部：四科——一条细线上的四个刻度位，不再是四张卡片 */
+.rail { left: 32px; bottom: 26px; display: flex; gap: 0; border-top: 1px solid var(--rule); }
+.subj { width: 150px; padding: 12px 18px 2px 0; cursor: pointer; position: relative; background: none; border: 0; color: inherit; font: inherit; text-align: left; }
+.subj + .subj { padding-left: 18px; border-left: 1px solid var(--rule); }
+.subj .t { font-size: 12px; color: var(--ink2); transition: color .12s var(--ease); }
+.subj .v { font: 300 22px/1.3 var(--num); font-variant-numeric: tabular-nums; }
+.subj .v small { font-size: 12px; color: var(--ink3); margin-left: 2px; }
+.subj .bar { height: 1px; background: var(--rule); margin-top: 8px; position: relative; }
+.subj .bar i { position: absolute; left: 0; top: 0; height: 1px; background: var(--ink); }
+.subj::after { content: ""; position: absolute; top: -1px; left: 0; right: 18px; height: 1px; background: var(--ink); transform: scaleX(0); transform-origin: left; transition: transform .2s var(--ease); }
+.subj + .subj::after { left: 18px; }
+.subj:hover .t { color: var(--ink); }
+.subj:hover::after, .subj.on::after { transform: scaleX(1); }
+.subj:focus-visible { outline: 1.5px solid var(--ink); outline-offset: 4px; }
+
+/* 星的瞄准框：选中 / 悬停都用细线角标，不用光晕 */
+.reticle { position: absolute; z-index: 2; width: 46px; height: 46px; transform: translate(-50%, -50%); pointer-events: none; }
+.reticle::before, .reticle::after { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(var(--ink), var(--ink)) 0 0 / 9px 1px, linear-gradient(var(--ink), var(--ink)) 0 0 / 1px 9px,
+              linear-gradient(var(--ink), var(--ink)) 100% 0 / 9px 1px, linear-gradient(var(--ink), var(--ink)) 100% 0 / 1px 9px,
+              linear-gradient(var(--ink), var(--ink)) 0 100% / 9px 1px, linear-gradient(var(--ink), var(--ink)) 0 100% / 1px 9px,
+              linear-gradient(var(--ink), var(--ink)) 100% 100% / 9px 1px, linear-gradient(var(--ink), var(--ink)) 100% 100% / 1px 9px; background-repeat: no-repeat; }
+.reticle::after { display: none; }
+.rlabel { position: absolute; z-index: 2; font-size: 12px; color: var(--ink); white-space: nowrap; transform: translate(30px, -50%); }
+.rlabel span { color: var(--ink3); margin-left: 8px; font-variant-numeric: tabular-nums; }
+.slabel { position: absolute; z-index: 2; font-size: 12px; color: var(--ink2); white-space: nowrap; transform: translate(-50%, 14px); }
+
+/* 右侧面板：全页唯一的面，实色、细线、无渐变无发光 */
+.panel { right: 20px; top: 20px; bottom: 20px; width: 372px; background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 26px 26px 20px; overflow: auto;
+  box-shadow: 0 30px 60px -30px rgba(0,0,0,.8); scrollbar-width: thin; scrollbar-color: rgba(236,235,230,.18) transparent; }
+.panel .no { font: 400 12px var(--num); color: var(--ink3); letter-spacing: .04em; font-variant-numeric: tabular-nums; }
+.panel h3 { font-size: 20px; font-weight: 500; margin: 6px 0 2px; letter-spacing: .01em; }
+.panel .sub { font-size: 12.5px; color: var(--ink2); }
+.due { color: var(--signal); }
+.big { display: flex; align-items: baseline; gap: 6px; margin: 22px 0 0; }
+.big b { font: 200 44px/1 var(--num); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.big small { color: var(--ink3); font: 300 14px var(--num); }
+.big .pc { margin-left: auto; font: 300 14px var(--num); color: var(--ink2); }
+.panel .scale { width: 100%; margin: 12px 0 0; }
+.facts { display: grid; grid-template-columns: repeat(3, 1fr); margin: 22px 0 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.facts div { padding: 10px 0 11px; } .facts div + div { padding-left: 14px; border-left: 1px solid var(--rule); }
+.facts span { display: block; font-size: 12px; color: var(--ink3); }
+.facts b { font: 300 18px var(--num); font-variant-numeric: tabular-nums; }
+.acts { display: flex; gap: 8px; margin: 20px 0 6px; }
+.note { font-size: 12.5px; color: var(--ink2); margin: 10px 0 0; line-height: 1.7; }
+.h { font-size: 12px; color: var(--ink3); margin: 26px 0 4px; }
+.row { display: grid; grid-template-columns: 22px 1fr auto; align-items: baseline; gap: 6px; padding: 9px 10px; margin: 0 -10px; border-radius: 6px; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease); color: var(--ink2); }
+.row:hover { background: rgba(236,235,230,.045); color: var(--ink); }
+.row:active { background: rgba(236,235,230,.025); }
+.row .i { font: 12px var(--num); color: var(--ink3); font-variant-numeric: tabular-nums; }
+.row .s { font: 300 13px var(--num); font-variant-numeric: tabular-nums; }
+.row .s small { color: var(--ink3); }
+.row.cur { color: var(--ink); } .row.cur .i { color: var(--ink); }
+.row .m { grid-column: 2 / -1; height: 1px; background: var(--rule); position: relative; margin-top: 6px; } .row .m i { position: absolute; left: 0; top: 0; height: 1px; background: currentColor; opacity: .9; }
+
+/* 按钮：像仪器上的实体按键——按下是「沉下去 1px」，不是缩放；悬停只变亮 */
+.btn { height: 36px; padding: 0 16px; border-radius: 8px; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; user-select: none; position: relative;
+  transition: background .12s var(--ease), border-color .12s var(--ease), color .12s var(--ease), box-shadow .14s var(--ease), transform .14s var(--ease); }
+.btn:focus-visible { outline: 1.5px solid var(--ink); outline-offset: 3px; }
+.btn:active { transform: translateY(1px); transition-duration: 40ms; }
+.pri { color: #111214; background: #ecebe6; border: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.75), inset 0 -1px 0 rgba(0,0,0,.18), 0 1px 0 rgba(0,0,0,.5), 0 2px 6px -2px rgba(0,0,0,.6); }
+.pri:hover { background: #f8f7f3; }
+.pri:active { background: #dedcd5; box-shadow: inset 0 1px 2px rgba(0,0,0,.28), 0 0 0 rgba(0,0,0,0); }
+.sec { color: var(--ink); background: transparent; border: 1px solid var(--rule2); }
+.sec:hover { border-color: rgba(236,235,230,.45); background: rgba(236,235,230,.04); }
+.sec:active { background: rgba(236,235,230,.02); }
+.txt { color: var(--ink2); background: none; border: 0; padding: 0 10px; }
+.txt:hover { color: var(--ink); }
+.txt:active { color: var(--ink2); }
+.txt.sig { color: var(--signal); } .txt.sig:hover { color: color-mix(in srgb, var(--signal) 70%, #fff); }
+/* 无色方案：不用颜色，用空心圆点 + 虚下划线区分 */
+body.mono .txt.sig .dot { background: none; border: 1px solid currentColor; width: 6px; height: 6px; }
+body.mono .due { text-decoration: underline dotted; text-underline-offset: 3px; }
+.pick { display: inline-flex; gap: 2px; padding: 2px; margin-left: 10px; border: 1px solid var(--rule); border-radius: 8px; vertical-align: middle; }
+.pick button { font: inherit; font-size: 12px; color: var(--ink2); background: none; border: 0; border-radius: 6px; padding: 3px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.pick button i { width: 8px; height: 8px; border-radius: 50%; }
+.pick button.on { background: rgba(236,235,230,.1); color: var(--ink); }
+.txt .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.ico { width: 36px; padding: 0; justify-content: center; }
+.btn[disabled] { color: var(--ink3); pointer-events: none; box-shadow: none; background: transparent; border: 1px dashed var(--rule); }
+.btn.loading { color: transparent; pointer-events: none; }
+.btn.loading::after { content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px; border-radius: 50%; border: 1.5px solid rgba(17,18,20,.25); border-top-color: #111214; animation: sp .7s linear infinite; }
+@keyframes sp { to { transform: rotate(360deg); } }
+
+.strip { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; padding: 26px 28px; border: 1px solid var(--rule); border-radius: 12px; }
+.strip .g { display: flex; flex-direction: column; gap: 10px; }
+.strip .g > span { font-size: 12px; color: var(--ink3); }
+.strip .g > div { display: flex; gap: 8px; align-items: center; }
+
+.light { background: #faf9f5; color: #3d3d3a; border-radius: 12px; padding: 22px 28px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.lb { height: 36px; padding: 0 16px; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; border: 1px solid transparent; transition: background .12s var(--ease), border-color .12s var(--ease), transform .14s var(--ease); }
+.lb:active { transform: translateY(1px); transition-duration: 40ms; }
+.lb:focus-visible { outline: 1.5px solid #3d3d3a; outline-offset: 3px; }
+.lb.p { background: #2b2b29; color: #faf9f5; box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 1px 2px rgba(0,0,0,.2); } .lb.p:hover { background: #3d3d3a; }
+.lb.o { background: transparent; border-color: rgba(31,30,29,.18); color: #3d3d3a; } .lb.o:hover { border-color: rgba(31,30,29,.4); }
+.lb.g { background: transparent; color: #6b6a65; padding: 0 10px; } .lb.g:hover { color: #1f1e1d; }
+.lb.d { background: transparent; color: #a3333c; padding: 0 10px; } .lb.d:hover { color: #7d1f27; text-decoration: underline; text-underline-offset: 3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="cap">拾星 · 第二版：天文台仪器。整页只有一个面（右侧面板）、一种强调色（冰蓝 #A9BFDF，只表示「该复习」）；其余是字、细线和刻度。</div>
+  <div class="sky" id="sky"><canvas></canvas>
+    <div class="hud score">
+      <div class="k">现在去考，预计</div>
+      <div class="n">16.2<small>/ 500</small></div>
+      <div class="scale"><i style="width:3.2%"></i><b style="left:35%"></b></div>
+      <div class="p">考试那天预计<em>175</em>可能在 96–263 之间</div>
+    </div>
+    <nav class="hud crumbs"><a>全景</a>/<a>数学一</a>/<a>函数、极限、连续</a>/<span class="on">函数的概念与性质</span></nav>
+    <div class="hud tools"><button class="btn txt sig"><span class="dot"></span>该复习 12</button><button class="btn txt">学习情况</button><button class="btn txt ico" aria-label="怎么读">?</button></div>
+
+    <div class="reticle" style="left:31%;top:52%"></div>
+    <div class="rlabel" style="left:31%;top:52%">函数的概念与性质<span>2.2 / 4.1</span></div>
+    <div class="slabel" style="left:44%;top:40%">数列极限与函数极限</div>
+    <div class="slabel" style="left:22%;top:66%">两个重要极限</div>
+
+    <div class="hud rail">
+      <button class="subj on"><div class="t">数学一</div><div class="v">4.1<small>/150</small></div><div class="bar"><i style="width:3%"></i></div></button>
+      <button class="subj"><div class="t">408</div><div class="v">0.0<small>/150</small></div><div class="bar"><i style="width:0"></i></div></button>
+      <button class="subj"><div class="t">英语一</div><div class="v">12.2<small>/100</small></div><div class="bar"><i style="width:12%"></i></div></button>
+      <button class="subj"><div class="t">政治</div><div class="v">0.0<small>/100</small></div><div class="bar"><i style="width:0"></i></div></button>
+    </div>
+
+    <aside class="hud panel">
+      <div class="no">数学一 · 01.1</div>
+      <h3>函数的概念与性质</h3>
+      <div class="sub">做对过中档题 · 上次学习今天</div>
+      <div class="big"><b>2.2</b><small>/ 4.1</small><span class="pc">52%</span></div>
+      <div class="scale"><i style="width:52%"></i><b style="left:70%"></b></div>
+      <div class="facts">
+        <div><span>掌握</span><b>52%</b></div>
+        <div><span>记忆</span><b>100%</b></div>
+        <div><span>历年真题</span><b>31</b></div>
+      </div>
+      <div class="acts"><button class="btn pri" id="go">用真题练这个考点</button><button class="btn sec">复制开场白</button></div>
+      <p class="note">再做对一道「较难」题能涨到 70% 以上（刻度上的竖线）。不复习的话，30 天后约 2.1 分。</p>
+      <div class="h">同一章</div>
+      <div class="row cur"><span class="i">01</span><span>函数的概念与性质</span><span class="s">2.2<small>/4.1</small></span><span class="m"><i style="width:52%"></i></span></div>
+      <div class="row"><span class="i">02</span><span>数列极限与函数极限</span><span class="s">1.0<small>/5.5</small></span><span class="m"><i style="width:18%"></i></span></div>
+      <div class="row"><span class="i">03</span><span>无穷小与无穷大 <span class="due">· 该复习</span></span><span class="s">0.3<small>/3.0</small></span><span class="m"><i style="width:10%"></i></span></div>
+      <div class="row"><span class="i">04</span><span>两个重要极限</span><span class="s">0.0<small>/2.4</small></span><span class="m"><i style="width:0"></i></span></div>
+    </aside>
+  </div>
+
+  <div class="cap">按钮的全部状态（都能悬停、按下、用 Tab 聚焦）。按下是「沉下去 1 像素」（40ms 按下、140ms 回弹），像按实体键；悬停只变亮，不位移、不发光。</div>
+  <div class="strip">
+    <div class="g"><span>主按钮（每屏最多一个）</span><div><button class="btn pri">用真题练这个考点</button><button class="btn pri" id="ld">点我看加载</button></div></div>
+    <div class="g"><span>次按钮</span><div><button class="btn sec">复制开场白</button></div></div>
+    <div class="g"><span>文字按钮 / 图标</span><div><button class="btn txt">学习情况</button><button class="btn txt ico" aria-label="怎么读">?</button></div></div>
+    <div class="g"><span>状态（唯一的颜色）</span><div><button class="btn txt sig"><span class="dot"></span>该复习 12</button></div></div>
+    <div class="g"><span>不可用</span><div><button class="btn sec" disabled>没有可练的题</button></div></div>
+  </div>
+
+  <div class="cap">其他页面（浅色）：同一套按键逻辑，换成宿主的明暗。</div>
+  <div class="light"><button class="lb p">AI 判分</button><button class="lb o">直接看答案</button><button class="lb g">白板</button><button class="lb d">删除这道错题</button></div>
+</div>
+<script>
+const st = document.getElementById('sky'), c = st.querySelector('canvas');
+function draw() {
+  const r = st.getBoundingClientRect(), d = devicePixelRatio || 1; c.width = r.width * d; c.height = r.height * d;
+  const g = c.getContext('2d'); g.setTransform(d, 0, 0, d, 0, 0);
+  let s = 11; const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  const cx = r.width * .62, cy = r.height * .5;
+  const glow = g.createRadialGradient(cx, cy, 0, cx, cy, r.width * .5);
+  glow.addColorStop(0, 'rgba(225,228,236,.22)'); glow.addColorStop(.3, 'rgba(170,176,190,.07)'); glow.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = glow; g.fillRect(0, 0, r.width, r.height);
+  for (let i = 0; i < 1400; i++) { const a = rnd(), t = rnd() * 6.28, rr = Math.pow(rnd(), .6) * r.width * .45; const x = cx + Math.cos(t + rr * .01) * rr, y = cy + Math.sin(t + rr * .01) * rr * .45; g.fillStyle = `rgba(232,234,240,${.15 + a * .6})`; g.fillRect(x, y, a < .1 ? 1.4 : .8, a < .1 ? 1.4 : .8); }
+  for (let i = 0; i < 500; i++) { g.fillStyle = `rgba(232,234,240,${rnd() * .5})`; g.fillRect(rnd() * r.width, rnd() * r.height, .7, .7); }
+  const stars = [[.31, .52, 7, .9], [.44, .40, 4, .5], [.22, .66, 3, .15], [.38, .62, 3.5, .35], [.27, .36, 2.5, .2]];
+  g.strokeStyle = 'rgba(236,235,230,.16)'; g.lineWidth = 1; g.beginPath();
+  [[0, 1], [0, 2], [0, 3], [1, 4]].forEach(([a, b]) => { g.moveTo(stars[a][0] * r.width, stars[a][1] * r.height); g.lineTo(stars[b][0] * r.width, stars[b][1] * r.height); }); g.stroke();
+  for (const [x, y, rad, m] of stars) { const X = x * r.width, Y = y * r.height; const sg = g.createRadialGradient(X, Y, 0, X, Y, rad * 4); sg.addColorStop(0, `rgba(255,255,255,${.4 + m * .6})`); sg.addColorStop(.25, `rgba(240,242,248,${.15 + m * .4})`); sg.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = sg; g.beginPath(); g.arc(X, Y, rad * 4, 0, 7); g.fill(); }
+}
+draw(); addEventListener('resize', draw);
+document.querySelectorAll('.subj').forEach((b) => b.addEventListener('click', () => document.querySelectorAll('.subj').forEach((x) => x.classList.toggle('on', x === b))));
+const ld = document.getElementById('ld'); ld.addEventListener('click', () => { ld.classList.add('loading'); setTimeout(() => ld.classList.remove('loading'), 1500); });
+</script>
+</body>
+</html>

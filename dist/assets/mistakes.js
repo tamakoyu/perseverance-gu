@@ -24,8 +24,7 @@ export function mountMistakes(ctx, container, signal) {
   const due = () => data.items.filter((m) => !m.archived && Date.parse(m.card?.due) <= Date.now());
 
   function render() {
-    reset(root, 
-      el("h2", "ky-h2", "错题本"),
+    reset(root,
       tabs([["due", `今日重做（${due().length}）`], ["all", `全部（${data.items.filter((m) => !m.archived).length}）`], ["reviews", `讲题记录（${(data.reviews || []).length}）`], ["reports", `问题清单（${data.reports.length}）`], ["add", "录入错题"]], tab, (k) => { tab = k; render(); }),
       body);
     reset(body);
@@ -83,7 +82,7 @@ export function mountMistakes(ctx, container, signal) {
         if (!confirm(`删除这道错题？\n${m.topic}\n删除后不能恢复。`)) return;
         try { await ctx.call("mistakes.delete", { id: m.id }); board.forget(qid); } catch (err) { toast(root, err.message, "error"); }
         load();
-      }, "ky-btn ky-btn-danger ky-push")));
+      }, "ky-btn ky-btn-ghost ky-btn-danger ky-push")));
     const card = el("section", "ky-card");
     const isChoice = !!m.options?.length;
     let chosen = "";
@@ -170,7 +169,7 @@ export function mountMistakes(ctx, container, signal) {
             m.chatId ? btn("打开来源会话", () => ctx.app.openSession(m.chatId), "ky-btn ky-btn-ghost") : null,
             btn(m.archived ? "取消归档" : "归档（已彻底掌握）", async () => { await ctx.call("mistakes.update", { id: m.id, patch: { archived: !m.archived } }); load(); }),
             btn("编辑", () => editDialog(m)),
-            btn("删除", async () => { if (confirm(`删除这道错题？\n${m.topic}\n删除后不能恢复。`)) { await ctx.call("mistakes.delete", { id: m.id }); load(); } }, "ky-btn ky-btn-danger")));
+            btn("删除", async () => { if (confirm(`删除这道错题？\n${m.topic}\n删除后不能恢复。`)) { await ctx.call("mistakes.delete", { id: m.id }); load(); } }, "ky-btn ky-btn-ghost ky-btn-danger")));
       });
       put(body, det);
     }
@@ -232,7 +231,7 @@ export function mountMistakes(ctx, container, signal) {
           el("div", "ky-row",
             btn("打开会话", () => ctx.app.openSession(r.chatId), "ky-btn ky-btn-ghost"),
             wrong ? btn("在错题本里看这些错题", () => { filter = { ...filter, source: "讲题会话", q: "" }; tab = "all"; render(); }, "ky-btn ky-btn-ghost") : null,
-            btn("删除这条记录", async () => { if (confirm("只删除批改记录，错题本里的错题保留。确定？")) { await ctx.call("reviews.delete", { id: r.id }); load(); } }, "ky-btn ky-btn-danger")));
+            btn("删除这条记录", async () => { if (confirm("只删除批改记录，错题本里的错题保留。确定？")) { await ctx.call("reviews.delete", { id: r.id }); load(); } }, "ky-btn ky-btn-ghost ky-btn-danger")));
       });
       put(body, det);
     }
