@@ -20,6 +20,18 @@ const SEGMENTS = [
   { key: "practice/10-doctrine.md", title: "练习：按分值选题，两轮提示后完整讲解" },
 ];
 const sha = (s) => crypto.createHash("sha1").update(s).digest("hex").slice(0, 12);
+// 插件以前版本写进宿主目录的文件指纹：宿主目录里还是这些旧版（学习者没手动改过）时，启动时自动换成新版
+const OLD_OURS = {
+  "practice/10-doctrine.md": ["cfb941f5d81b"],
+  "prober/10-probe-doctrine.md": ["208770fd6a05", "24ff8d5c4ed4"],
+  "shared/20-question-tools.md": ["d67b84266eef"],
+  "system-prompt.md": ["a620c17d6f5b"],
+  "teacher/05-method.md": ["e0bc9d6c8fbd"],
+  "teacher/10-planning.md": ["63387a380791", "e0b95c719fe8"],
+  "teacher/20-teaching.md": ["26ee265972e0"],
+  "teacher/28-predictions.md": ["4cff3a47b287"],
+  "teacher/30-question-principles.md": ["234d2a493eff", "a5d6abf5fc16"],
+};
 
 function createHostPrompts({ ctx, store }) {
   /** 宿主数据目录：插件数据在 <数据目录>/plugins/<id>/data。 */
@@ -95,6 +107,7 @@ function createHostPrompts({ ctx, store }) {
         meta.backups[s.key] = { hadFile: cur != null, text: cur, wasOn: settings.agent.prompts[s.key] };
       }
       writeAtomic(f, text);
+      meta.oursHash = { ...(meta.oursHash || {}), [s.key]: sha(text) };
       const src = hostSource(s.key);
       if (src != null) meta.sourceHash[s.key] = sha(src);
       settings.agent.prompts[s.key] = true;
@@ -125,7 +138,27 @@ function createHostPrompts({ ctx, store }) {
     return status();
   }
 
-  return { status, apply, revert, SEGMENTS };
+  /** 插件更新后：已应用过、且宿主目录里的文件还是插件以前写的版本（没被手动改过）的段落，换成新版。返回换了几段。 */
+  function sync() {
+    const meta = store.value("hostPrompts", { applied: false, backups: {}, sourceHash: {} });
+    if (!meta.applied) return 0;
+    let n = 0;
+    for (const s of SEGMENTS) {
+      const f = promptFile(s.key);
+      const cur = readText(f);
+      const text = ours(s.key);
+      if (cur == null || cur === text) continue;
+      const h = sha(cur);
+      if (h !== meta.oursHash?.[s.key] && !(OLD_OURS[s.key] || []).includes(h)) continue; // 学习者自己改过，不动
+      writeAtomic(f, text);
+      meta.oursHash = { ...(meta.oursHash || {}), [s.key]: sha(text) };
+      n++;
+    }
+    if (n) store.saveValue("hostPrompts", meta);
+    return n;
+  }
+
+  return { status, apply, revert, sync, SEGMENTS };
 }
 
 module.exports = { createHostPrompts };
